@@ -1,0 +1,44 @@
+# Java sources
+*.java          text eol=lf diff=java
+*.kt            text eol=lf diff=kotlin
+*.groovy        text eol=lf diff=java
+*.scala         text eol=lf diff=java
+*.gradle        text eol=lf diff=java
+*.gradle.kts    text eol=lf diff=kotlin
+
+# These files are text and should be normalized (Convert crlf => lf)
+*.css           text diff=css
+*.scss          text diff=css
+*.sass          text
+*.df            text
+*.htm           text diff=html
+*.html          text diff=html
+*.js            text
+*.mjs           text
+*.cjs           text
+*.jsp           text
+*.jspf          text
+*.jspx          text
+*.properties    text
+*.tld           text
+*.tag           text
+*.tagx          text
+*.xml           text
+
+# These files are binary and should be left untouched
+# (binary is a macro for -text -diff)
+*.class         binary
+*.dll           binary
+*.ear           binary
+*.jar           binary
+*.so            binary
+*.war           binary
+*.jks           binary
+
+# Common build-tool wrapper scripts ('.cmd' versions are handled by 'Common.gitattributes')
+mvnw            text eol=lf
+gradlew         text eol=lf
+
+# These are explicitly windows files and should use crlf
+*.sh            text eol=lf
+*.bat           text eol=crlf
