@@ -28,6 +28,7 @@ public final class BackendApplication {
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
         BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
+        HttpProxyService httpProxyService = new HttpProxyService();
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
@@ -37,6 +38,7 @@ public final class BackendApplication {
         server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
         server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService));
+        server.createContext("/api/http-proxy", httpProxyService::handle);
         server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -93,7 +95,7 @@ public final class BackendApplication {
         return null;
     }
 
-    private static void sendText(HttpExchange exchange, int status, String body, String contentType) throws IOException {
+    static void sendText(HttpExchange exchange, int status, String body, String contentType) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         Headers headers = exchange.getResponseHeaders();
         headers.set("Content-Type", contentType);

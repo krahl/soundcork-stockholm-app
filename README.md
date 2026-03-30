@@ -6,6 +6,7 @@ Current scope:
 
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
+- Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
 - Persists `getData` / `setData` values under `backend/state/native-state.json`
 - Reads backend configuration from `backend/config/backend-config.json`
 - Uses backend configuration to control frontend `loggingLevel` / `showDebug`
