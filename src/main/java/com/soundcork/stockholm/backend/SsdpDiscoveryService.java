@@ -24,6 +24,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
 import javax.xml.parsers.DocumentBuilderFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.InputSource;
 
 final class SsdpDiscoveryService {
@@ -36,6 +38,7 @@ final class SsdpDiscoveryService {
     private static final int RECEIVE_SLICE_MS = 250;
     private static final String RENDERER_ST = "urn:schemas-upnp-org:device:MediaRenderer:1";
     private static final String SERVER_ST = "urn:schemas-upnp-org:device:MediaServer:1";
+    private static final Logger LOGGER = LoggerFactory.getLogger(SsdpDiscoveryService.class);
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(2))
@@ -46,6 +49,8 @@ final class SsdpDiscoveryService {
     }
 
     List<Map<String, Object>> discoverRenderers(Consumer<List<Map<String, Object>>> onDiscovered) {
+        LOGGER.debug("Starting renderer SSDP discovery with probes={}, intervalMs={}, graceMs={}",
+                SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
         Map<String, Map<String, Object>> devices = new LinkedHashMap<>();
         for (Map<String, String> response : search(RENDERER_ST)) {
             String host = hostFromResponse(response);
@@ -55,17 +60,22 @@ final class SsdpDiscoveryService {
             Map<String, Object> speaker = fetchSpeakerInfo(host);
             if (speaker != null) {
                 devices.put(host, speaker);
+                LOGGER.debug("Discovered renderer {} at {}", speaker.get("uID"), host);
                 if (onDiscovered != null) {
                     onDiscovered.accept(List.of(new LinkedHashMap<>(speaker)));
                 }
             }
         }
-        return devices.values().stream()
+        List<Map<String, Object>> results = devices.values().stream()
                 .sorted(Comparator.comparing(entry -> String.valueOf(entry.get("ip"))))
                 .toList();
+        LOGGER.debug("Renderer SSDP discovery completed with {} result(s)", results.size());
+        return results;
     }
 
     List<Map<String, Object>> discoverServers() {
+        LOGGER.debug("Starting media-server SSDP discovery with probes={}, intervalMs={}, graceMs={}",
+                SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
         Map<String, Map<String, Object>> servers = new LinkedHashMap<>();
         for (Map<String, String> response : search(SERVER_ST)) {
             String location = response.get("location");
@@ -84,25 +94,35 @@ final class SsdpDiscoveryService {
                 server.put("ip", uri.getHost());
                 server.put("port", String.valueOf(port));
                 servers.put(uri.getHost() + ":" + port, server);
-            } catch (IllegalArgumentException ignored) {
+                LOGGER.debug("Discovered media server {} at {}:{}", server.get("uID"), uri.getHost(), port);
+            } catch (IllegalArgumentException exception) {
+                LOGGER.debug("Ignoring malformed media-server location '{}'", location, exception);
             }
         }
-        return new ArrayList<>(servers.values());
+        List<Map<String, Object>> results = new ArrayList<>(servers.values());
+        LOGGER.debug("Media-server SSDP discovery completed with {} result(s)", results.size());
+        return results;
     }
 
     private List<Map<String, String>> search(String searchTarget) {
         List<NetworkInterface> interfaces = discoveryInterfaces();
+        LOGGER.debug("SSDP search target {} using interfaces {}",
+                searchTarget,
+                interfaces.isEmpty() ? List.of("default-route") : interfaces.stream().map(this::describeInterface).toList());
         if (interfaces.isEmpty()) {
             return searchOnInterface(searchTarget, null);
         }
 
         for (NetworkInterface networkInterface : interfaces) {
             List<Map<String, String>> responses = searchOnInterface(searchTarget, networkInterface);
+            LOGGER.debug("SSDP search for {} on {} returned {} response(s)",
+                    searchTarget, describeInterface(networkInterface), responses.size());
             if (!responses.isEmpty()) {
                 return responses;
             }
         }
 
+        LOGGER.debug("SSDP search for {} completed without responses", searchTarget);
         return List.of();
     }
 
@@ -112,12 +132,18 @@ final class SsdpDiscoveryService {
         byte[] payload = createSearchPayload(searchTarget).getBytes(StandardCharsets.UTF_8);
 
         try (MulticastSocket socket = createSocket(networkInterface)) {
+            LOGGER.debug("Sending SSDP search for {} via {} to {}:{}",
+                    searchTarget,
+                    describeInterface(networkInterface),
+                    destination.getHostString(),
+                    destination.getPort());
             for (int probe = 0; probe < SEARCH_PROBE_COUNT; probe++) {
                 socket.send(new DatagramPacket(payload, payload.length, destination));
                 receiveResponsesUntil(socket, searchTarget, responses, System.currentTimeMillis() + SEARCH_PROBE_INTERVAL_MS);
             }
             receiveResponsesUntil(socket, searchTarget, responses, System.currentTimeMillis() + SEARCH_RESPONSE_GRACE_MS);
-        } catch (Exception ignored) {
+        } catch (Exception exception) {
+            LOGGER.debug("SSDP search for {} failed on {}", searchTarget, describeInterface(networkInterface), exception);
         }
 
         return new ArrayList<>(responses.values());
@@ -128,6 +154,7 @@ final class SsdpDiscoveryService {
             MulticastSocket socket = new MulticastSocket();
             socket.setReuseAddress(true);
             socket.setTimeToLive(2);
+            LOGGER.debug("Created SSDP socket using default routing");
             return socket;
         }
 
@@ -140,6 +167,8 @@ final class SsdpDiscoveryService {
         socket.setReuseAddress(true);
         socket.setNetworkInterface(networkInterface);
         socket.setTimeToLive(2);
+        LOGGER.debug("Created SSDP socket bound to {} on {}", bindAddress.getHostAddress(),
+                describeInterface(networkInterface));
         return socket;
     }
 
@@ -161,6 +190,10 @@ final class SsdpDiscoveryService {
                     continue;
                 }
                 responses.putIfAbsent(responseKey(headers), headers);
+                LOGGER.debug("Received SSDP response for {} from {} with location={}",
+                        searchTarget,
+                        packet.getAddress().getHostAddress(),
+                        headers.get("location"));
             } catch (SocketTimeoutException ignored) {
             }
         }
@@ -215,12 +248,14 @@ final class SsdpDiscoveryService {
 
     private Map<String, Object> fetchSpeakerInfo(String host) {
         try {
+            LOGGER.debug("Fetching renderer device info from {}:8090", host);
             HttpRequest request = HttpRequest.newBuilder(new URI("http", null, host, 8090, "/info", null, null))
                     .timeout(Duration.ofSeconds(2))
                     .GET()
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300 || response.body().isBlank()) {
+                LOGGER.debug("Renderer info request for {} returned status {}", host, response.statusCode());
                 return null;
             }
             var factory = DocumentBuilderFactory.newInstance();
@@ -239,7 +274,8 @@ final class SsdpDiscoveryService {
             speaker.put("uID", attribute.getNodeValue().toUpperCase(Locale.ROOT));
             speaker.put("ip", host);
             return speaker;
-        } catch (Exception ignored) {
+        } catch (Exception exception) {
+            LOGGER.debug("Failed to fetch renderer device info from {}", host, exception);
             return null;
         }
     }
@@ -281,7 +317,8 @@ final class SsdpDiscoveryService {
                     interfaces.add(networkInterface);
                 }
             }
-        } catch (SocketException ignored) {
+        } catch (SocketException exception) {
+            LOGGER.debug("Failed to enumerate network interfaces for SSDP discovery", exception);
         }
         interfaces.sort(Comparator
                 .comparingInt(this::interfacePriority)
@@ -332,6 +369,15 @@ final class SsdpDiscoveryService {
             }
         }
         return null;
+    }
+
+    private String describeInterface(NetworkInterface networkInterface) {
+        if (networkInterface == null) {
+            return "default-route";
+        }
+        Inet4Address address = primaryIpv4Address(networkInterface);
+        String ip = address == null ? "no-ipv4" : address.getHostAddress();
+        return networkInterface.getName() + "(" + networkInterface.getDisplayName() + ", " + ip + ")";
     }
 
     private String createSearchPayload(String searchTarget) {

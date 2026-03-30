@@ -14,10 +14,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class NativeBridgeService implements AutoCloseable {
     private static final String DEFAULT_CLIENT_ID = "default";
     private static final String UNSUPPORTED = "unsupported";
+    private static final Logger LOGGER = LoggerFactory.getLogger(NativeBridgeService.class);
 
     private final Path stateFile;
     private final SsdpDiscoveryService discoveryService;
@@ -29,6 +32,7 @@ final class NativeBridgeService implements AutoCloseable {
         this.stateFile = stateFile;
         this.discoveryService = new SsdpDiscoveryService();
         loadState();
+        LOGGER.debug("NativeBridgeService initialized with state file {}", stateFile);
     }
 
     void handleAppSend(String clientId, String payload) {
@@ -42,19 +46,21 @@ final class NativeBridgeService implements AutoCloseable {
             Map<String, Object> params = request.get("params") instanceof Map<?, ?> map
                     ? SimpleJson.asObject(map)
                     : Map.of();
+            LOGGER.debug("Handling method '{}' for client '{}'", method, queueId);
 
             if (method == null || method.isBlank()) {
+                LOGGER.debug("Rejecting empty method for client '{}'", queueId);
                 enqueueCallbackError(queueId, id, "invalid_method");
                 return;
             }
 
             switch (method) {
                 case "locale", "htmlReady", "stopHrmsUpdates" -> {
-                    // No server work is needed here.
+                    LOGGER.debug("No backend action required for method '{}' on client '{}'", method, queueId);
                 }
                 case "log" -> {
                     if (params.containsKey("msg")) {
-                        System.out.println("[Stockholm] " + stringValue(params.get("msg")));
+                        LOGGER.debug("[Stockholm:{}] {}", queueId, stringValue(params.get("msg")));
                     }
                 }
                 case "setData" -> {
@@ -62,6 +68,7 @@ final class NativeBridgeService implements AutoCloseable {
                     String value = params.containsKey("value") ? stringifyScalar(params.get("value")) : "";
                     if (name != null && !name.isBlank()) {
                         state.put(name, value);
+                        LOGGER.debug("Updated persisted state key '{}' for client '{}'", name, queueId);
                         persistState();
                     }
                 }
@@ -72,20 +79,29 @@ final class NativeBridgeService implements AutoCloseable {
                 case "getConstant" -> enqueueCallbackResult(queueId, id, getConstant(params), "");
                 case "canPerformAutoAPSetup" -> enqueueCallbackResult(queueId, id, createAutoApSetupInfo(), "");
                 case "getDeviceList" -> submitAsync(queueId, id, () -> {
+                    LOGGER.debug("Starting renderer discovery for client '{}'", queueId);
                     List<Map<String, Object>> devices = discoveryService.discoverRenderers(
                             partial -> enqueueMethod(queueId, "devices", partial));
+                    LOGGER.debug("Renderer discovery finished with {} device(s) for client '{}'",
+                            devices.size(), queueId);
                     if (devices.isEmpty()) {
                         enqueueMethod(queueId, "devices", devices);
                     }
                 });
-                case "getHrmsList" -> submitAsync(queueId, id,
-                        () -> enqueueMethod(queueId, "servers", discoveryService.discoverServers()));
+                case "getHrmsList" -> submitAsync(queueId, id, () -> {
+                    LOGGER.debug("Starting media-server discovery for client '{}'", queueId);
+                    List<Map<String, Object>> servers = discoveryService.discoverServers();
+                    LOGGER.debug("Media-server discovery finished with {} server(s) for client '{}'",
+                            servers.size(), queueId);
+                    enqueueMethod(queueId, "servers", servers);
+                });
                 case "getNetStats", "getSSIDList", "setSSID", "updateSetting", "oauth", "downloadNewGui",
                         "installNewGui", "sendLogs", "socketCreate", "socketSend", "socketClose" ->
-                        enqueueCallbackError(queueId, id, UNSUPPORTED);
-                default -> enqueueCallbackError(queueId, id, UNSUPPORTED);
+                        enqueueUnsupportedMethod(queueId, id, method);
+                default -> enqueueUnsupportedMethod(queueId, id, method);
             }
         } catch (RuntimeException exception) {
+            LOGGER.warn("Failed to handle appSend payload for client '{}'", queueId, exception);
             enqueueCallbackError(queueId, id, exception.getMessage() == null ? "bridge_error" : exception.getMessage());
         }
     }
@@ -98,6 +114,9 @@ final class NativeBridgeService implements AutoCloseable {
             while (!queue.isEmpty()) {
                 messages.add(queue.removeFirst());
             }
+        }
+        if (!messages.isEmpty()) {
+            LOGGER.debug("Drained {} queued message(s) for client '{}'", messages.size(), queueId);
         }
         LinkedHashMap<String, Object> wrapper = new LinkedHashMap<>();
         wrapper.put("messages", messages.isEmpty() ? null : messages);
@@ -140,9 +159,15 @@ final class NativeBridgeService implements AutoCloseable {
             try {
                 task.run();
             } catch (RuntimeException exception) {
+                LOGGER.warn("Asynchronous backend task failed for client '{}'", clientId, exception);
                 enqueueCallbackError(clientId, id, exception.getMessage() == null ? "bridge_error" : exception.getMessage());
             }
         });
+    }
+
+    private void enqueueUnsupportedMethod(String clientId, Object id, String method) {
+        LOGGER.debug("Method '{}' is unsupported for client '{}'", method, clientId);
+        enqueueCallbackError(clientId, id, UNSUPPORTED);
     }
 
     private Map<String, Object> createTimeZoneInfo() {
@@ -182,6 +207,7 @@ final class NativeBridgeService implements AutoCloseable {
 
     private void loadState() {
         if (!Files.exists(stateFile)) {
+            LOGGER.debug("No persisted native bridge state found at {}", stateFile);
             return;
         }
         try {
@@ -190,7 +216,9 @@ final class NativeBridgeService implements AutoCloseable {
             for (Map.Entry<String, Object> entry : object.entrySet()) {
                 state.put(entry.getKey(), stringifyScalar(entry.getValue()));
             }
-        } catch (IOException | RuntimeException ignored) {
+            LOGGER.debug("Loaded {} persisted state entries from {}", state.size(), stateFile);
+        } catch (IOException | RuntimeException exception) {
+            LOGGER.warn("Failed to load persisted native bridge state from {}", stateFile, exception);
         }
     }
 
@@ -198,7 +226,9 @@ final class NativeBridgeService implements AutoCloseable {
         try {
             Files.createDirectories(stateFile.getParent());
             Files.writeString(stateFile, SimpleJson.stringify(new LinkedHashMap<>(state)), StandardCharsets.UTF_8);
-        } catch (IOException ignored) {
+            LOGGER.debug("Persisted {} state entries to {}", state.size(), stateFile);
+        } catch (IOException exception) {
+            LOGGER.warn("Failed to persist native bridge state to {}", stateFile, exception);
         }
     }
 
@@ -225,6 +255,7 @@ final class NativeBridgeService implements AutoCloseable {
 
     @Override
     public void close() {
+        LOGGER.debug("Shutting down NativeBridgeService executor");
         executor.shutdownNow();
     }
 }

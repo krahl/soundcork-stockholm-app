@@ -13,8 +13,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.concurrent.Executors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class BackendApplication {
+    private static final Logger LOGGER = LoggerFactory.getLogger(BackendApplication.class);
+
     private BackendApplication() {
     }
 
@@ -23,6 +27,8 @@ public final class BackendApplication {
         Path stockholmRoot = workspaceRoot.resolve("stockholm").normalize();
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
+        LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
+                workspaceRoot, stockholmRoot, stateFile);
 
         InetSocketAddress socketAddress = new InetSocketAddress("0.0.0.0", 8088);
         HttpServer server = HttpServer.create(socketAddress, 0);
@@ -32,31 +38,39 @@ public final class BackendApplication {
         server.createContext("/", new StaticStockholmHandler(stockholmRoot));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            LOGGER.info("Shutting down Stockholm backend");
             bridgeService.close();
             server.stop(0);
         }));
 
         server.start();
-        System.out.println("Stockholm backend listening on http://" + socketAddress.getAddress() + ":" + socketAddress.getPort() + "/");
+        LOGGER.info("Stockholm backend listening on http://{}:{}/",
+                socketAddress.getHostString(), socketAddress.getPort());
     }
 
     private static void handleAppSend(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            LOGGER.debug("Rejected {} request to /api/native/appSend", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
+        String clientId = clientId(exchange);
         String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        bridgeService.handleAppSend(clientId(exchange), payload);
+        LOGGER.debug("Received /api/native/appSend for client '{}'", describeClientId(clientId));
+        bridgeService.handleAppSend(clientId, payload);
         exchange.sendResponseHeaders(204, -1);
         exchange.close();
     }
 
     private static void handleRunQueue(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            LOGGER.debug("Rejected {} request to /api/native/runQueue", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        sendText(exchange, 200, bridgeService.runQueue(clientId(exchange)), "application/json; charset=UTF-8");
+        String clientId = clientId(exchange);
+        LOGGER.debug("Received /api/native/runQueue for client '{}'", describeClientId(clientId));
+        sendText(exchange, 200, bridgeService.runQueue(clientId), "application/json; charset=UTF-8");
     }
 
     private static String clientId(HttpExchange exchange) {
@@ -88,6 +102,10 @@ public final class BackendApplication {
         }
     }
 
+    private static String describeClientId(String clientId) {
+        return clientId == null || clientId.isBlank() ? "default" : clientId;
+    }
+
     private static Path resolveWorkspaceRoot() {
         Path cwd = Path.of("").toAbsolutePath().normalize();
         if (Files.isDirectory(cwd.resolve("stockholm"))) {
@@ -110,12 +128,15 @@ public final class BackendApplication {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+                LOGGER.debug("Rejected {} request for static path {}", exchange.getRequestMethod(),
+                        exchange.getRequestURI().getPath());
                 sendText(exchange, 405, "Method Not Allowed", "text/plain");
                 return;
             }
 
             Path file = resolveFile(exchange.getRequestURI().getPath());
             if (file == null || !Files.exists(file) || Files.isDirectory(file)) {
+                LOGGER.debug("Static asset not found for request path {}", exchange.getRequestURI().getPath());
                 sendText(exchange, 404, "Not Found", "text/plain");
                 return;
             }
@@ -141,6 +162,7 @@ public final class BackendApplication {
             }
             Path resolved = stockholmRoot.resolve(path.substring(1)).normalize();
             if (!resolved.startsWith(stockholmRoot)) {
+                LOGGER.debug("Rejected static path outside stockholm root: {}", rawPath);
                 return null;
             }
             if (Files.isDirectory(resolved)) {
