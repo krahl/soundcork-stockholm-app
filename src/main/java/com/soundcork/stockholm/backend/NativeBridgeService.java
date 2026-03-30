@@ -20,6 +20,9 @@ import org.slf4j.LoggerFactory;
 final class NativeBridgeService implements AutoCloseable {
     private static final String DEFAULT_CLIENT_ID = "default";
     private static final String UNSUPPORTED = "unsupported";
+    private static final Map<String, String> DEFAULT_CONSTANTS = Map.of(
+            "kilo", "a7928d7b43dcd49f0af31e5aeed26458"
+    );
     private static final Logger LOGGER = LoggerFactory.getLogger(NativeBridgeService.class);
 
     private final Path stateFile;
@@ -32,6 +35,7 @@ final class NativeBridgeService implements AutoCloseable {
         this.stateFile = stateFile;
         this.discoveryService = new SsdpDiscoveryService();
         loadState();
+        seedDefaultConstants();
         LOGGER.debug("NativeBridgeService initialized with state file {}", stateFile);
     }
 
@@ -189,7 +193,20 @@ final class NativeBridgeService implements AutoCloseable {
         if (name == null) {
             return "";
         }
-        return state.getOrDefault("constant." + name, "");
+        return state.getOrDefault("constant." + name, DEFAULT_CONSTANTS.getOrDefault(name, ""));
+    }
+
+    private void seedDefaultConstants() {
+        boolean updated = false;
+        for (Map.Entry<String, String> entry : DEFAULT_CONSTANTS.entrySet()) {
+            String key = "constant." + entry.getKey();
+            if (state.putIfAbsent(key, entry.getValue()) == null) {
+                updated = true;
+            }
+        }
+        if (updated) {
+            persistState();
+        }
     }
 
     private String getLegalDocPath(Map<String, Object> params) {
