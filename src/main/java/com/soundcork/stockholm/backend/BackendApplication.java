@@ -24,7 +24,8 @@ public final class BackendApplication {
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8088), 0);
+        InetSocketAddress socketAddress = new InetSocketAddress("0.0.0.0", 8088);
+        HttpServer server = HttpServer.create(socketAddress, 0);
         server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
         server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService));
@@ -36,7 +37,7 @@ public final class BackendApplication {
         }));
 
         server.start();
-        System.out.println("Stockholm backend listening on http://127.0.0.1:8088/");
+        System.out.println("Stockholm backend listening on http://" + socketAddress.getAddress() + ":" + socketAddress.getPort() + "/");
     }
 
     private static void handleAppSend(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {

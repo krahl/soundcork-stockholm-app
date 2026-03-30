@@ -33,19 +33,21 @@ final class NativeBridgeService implements AutoCloseable {
 
     void handleAppSend(String clientId, String payload) {
         String queueId = normalizeClientId(clientId);
-        Map<String, Object> request = SimpleJson.asObject(SimpleJson.parse(payload));
-        String method = stringValue(request.get("method"));
-        Object id = request.get("id");
-        Map<String, Object> params = request.get("params") instanceof Map<?, ?> map
-                ? SimpleJson.asObject(map)
-                : Map.of();
-
-        if (method == null || method.isBlank()) {
-            enqueueCallbackError(queueId, id, "invalid_method");
-            return;
-        }
+        Object id = null;
 
         try {
+            Map<String, Object> request = SimpleJson.asObject(SimpleJson.parse(payload));
+            String method = stringValue(request.get("method"));
+            id = request.get("id");
+            Map<String, Object> params = request.get("params") instanceof Map<?, ?> map
+                    ? SimpleJson.asObject(map)
+                    : Map.of();
+
+            if (method == null || method.isBlank()) {
+                enqueueCallbackError(queueId, id, "invalid_method");
+                return;
+            }
+
             switch (method) {
                 case "locale", "htmlReady", "stopHrmsUpdates" -> {
                     // No server work is needed here.
@@ -69,8 +71,15 @@ final class NativeBridgeService implements AutoCloseable {
                 case "getLegalDocPath" -> enqueueCallbackResult(queueId, id, getLegalDocPath(params), null);
                 case "getConstant" -> enqueueCallbackResult(queueId, id, getConstant(params), "");
                 case "canPerformAutoAPSetup" -> enqueueCallbackResult(queueId, id, createAutoApSetupInfo(), "");
-                case "getDeviceList" -> executor.submit(() -> enqueueMethod(queueId, "devices", discoveryService.discoverRenderers()));
-                case "getHrmsList" -> executor.submit(() -> enqueueMethod(queueId, "servers", discoveryService.discoverServers()));
+                case "getDeviceList" -> submitAsync(queueId, id, () -> {
+                    List<Map<String, Object>> devices = discoveryService.discoverRenderers(
+                            partial -> enqueueMethod(queueId, "devices", partial));
+                    if (devices.isEmpty()) {
+                        enqueueMethod(queueId, "devices", devices);
+                    }
+                });
+                case "getHrmsList" -> submitAsync(queueId, id,
+                        () -> enqueueMethod(queueId, "servers", discoveryService.discoverServers()));
                 case "getNetStats", "getSSIDList", "setSSID", "updateSetting", "oauth", "downloadNewGui",
                         "installNewGui", "sendLogs", "socketCreate", "socketSend", "socketClose" ->
                         enqueueCallbackError(queueId, id, UNSUPPORTED);
@@ -124,6 +133,16 @@ final class NativeBridgeService implements AutoCloseable {
         synchronized (queue) {
             queue.addLast(payload);
         }
+    }
+
+    private void submitAsync(String clientId, Object id, Runnable task) {
+        executor.submit(() -> {
+            try {
+                task.run();
+            } catch (RuntimeException exception) {
+                enqueueCallbackError(clientId, id, exception.getMessage() == null ? "bridge_error" : exception.getMessage());
+            }
+        });
     }
 
     private Map<String, Object> createTimeZoneInfo() {

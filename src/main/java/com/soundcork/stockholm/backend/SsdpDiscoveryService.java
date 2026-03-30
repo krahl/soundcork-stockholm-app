@@ -2,8 +2,12 @@ package com.soundcork.stockholm.backend;
 
 import java.io.StringReader;
 import java.net.DatagramPacket;
-import java.net.DatagramSocket;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.MulticastSocket;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -13,18 +17,23 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Consumer;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.xml.sax.InputSource;
 
 final class SsdpDiscoveryService {
     private static final String MULTICAST_HOST = "239.255.255.250";
     private static final int SSDP_PORT = 1900;
-    private static final int SOCKET_TIMEOUT_MS = 700;
-    private static final int SEARCH_WINDOW_MS = 1800;
+    private static final int MX_SECONDS = 1;
+    private static final int SEARCH_PROBE_COUNT = 3;
+    private static final int SEARCH_PROBE_INTERVAL_MS = 350;
+    private static final int SEARCH_RESPONSE_GRACE_MS = 1250;
+    private static final int RECEIVE_SLICE_MS = 250;
     private static final String RENDERER_ST = "urn:schemas-upnp-org:device:MediaRenderer:1";
     private static final String SERVER_ST = "urn:schemas-upnp-org:device:MediaServer:1";
 
@@ -33,6 +42,10 @@ final class SsdpDiscoveryService {
             .build();
 
     List<Map<String, Object>> discoverRenderers() {
+        return discoverRenderers(null);
+    }
+
+    List<Map<String, Object>> discoverRenderers(Consumer<List<Map<String, Object>>> onDiscovered) {
         Map<String, Map<String, Object>> devices = new LinkedHashMap<>();
         for (Map<String, String> response : search(RENDERER_ST)) {
             String host = hostFromResponse(response);
@@ -42,6 +55,9 @@ final class SsdpDiscoveryService {
             Map<String, Object> speaker = fetchSpeakerInfo(host);
             if (speaker != null) {
                 devices.put(host, speaker);
+                if (onDiscovered != null) {
+                    onDiscovered.accept(List.of(new LinkedHashMap<>(speaker)));
+                }
             }
         }
         return devices.values().stream()
@@ -59,14 +75,15 @@ final class SsdpDiscoveryService {
             }
             try {
                 URI uri = URI.create(location);
-                if (uri.getHost() == null || uri.getPort() < 0) {
+                int port = uri.getPort() >= 0 ? uri.getPort() : defaultPort(uri);
+                if (uri.getHost() == null || port < 0) {
                     continue;
                 }
                 LinkedHashMap<String, Object> server = new LinkedHashMap<>();
-                server.put("uID", normalizeUuid(usn, uri.getHost() + ":" + uri.getPort()));
+                server.put("uID", normalizeUuid(usn, uri.getHost() + ":" + port));
                 server.put("ip", uri.getHost());
-                server.put("port", String.valueOf(uri.getPort()));
-                servers.put(uri.getHost() + ":" + uri.getPort(), server);
+                server.put("port", String.valueOf(port));
+                servers.put(uri.getHost() + ":" + port, server);
             } catch (IllegalArgumentException ignored) {
             }
         }
@@ -74,28 +91,79 @@ final class SsdpDiscoveryService {
     }
 
     private List<Map<String, String>> search(String searchTarget) {
-        ArrayList<Map<String, String>> responses = new ArrayList<>();
+        List<NetworkInterface> interfaces = discoveryInterfaces();
+        if (interfaces.isEmpty()) {
+            return searchOnInterface(searchTarget, null);
+        }
+
+        for (NetworkInterface networkInterface : interfaces) {
+            List<Map<String, String>> responses = searchOnInterface(searchTarget, networkInterface);
+            if (!responses.isEmpty()) {
+                return responses;
+            }
+        }
+
+        return List.of();
+    }
+
+    private List<Map<String, String>> searchOnInterface(String searchTarget, NetworkInterface networkInterface) {
+        LinkedHashMap<String, Map<String, String>> responses = new LinkedHashMap<>();
         InetSocketAddress destination = new InetSocketAddress(MULTICAST_HOST, SSDP_PORT);
         byte[] payload = createSearchPayload(searchTarget).getBytes(StandardCharsets.UTF_8);
-        long deadline = System.currentTimeMillis() + SEARCH_WINDOW_MS;
 
-        try (DatagramSocket socket = new DatagramSocket()) {
-            socket.setSoTimeout(SOCKET_TIMEOUT_MS);
-            socket.send(new DatagramPacket(payload, payload.length, destination));
-            while (System.currentTimeMillis() < deadline) {
-                byte[] buffer = new byte[8192];
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                try {
-                    socket.receive(packet);
-                    responses.add(parseHeaders(packet));
-                } catch (SocketTimeoutException ignored) {
-                    break;
-                }
+        try (MulticastSocket socket = createSocket(networkInterface)) {
+            for (int probe = 0; probe < SEARCH_PROBE_COUNT; probe++) {
+                socket.send(new DatagramPacket(payload, payload.length, destination));
+                receiveResponsesUntil(socket, searchTarget, responses, System.currentTimeMillis() + SEARCH_PROBE_INTERVAL_MS);
             }
+            receiveResponsesUntil(socket, searchTarget, responses, System.currentTimeMillis() + SEARCH_RESPONSE_GRACE_MS);
         } catch (Exception ignored) {
         }
 
-        return responses;
+        return new ArrayList<>(responses.values());
+    }
+
+    private MulticastSocket createSocket(NetworkInterface networkInterface) throws Exception {
+        if (networkInterface == null) {
+            MulticastSocket socket = new MulticastSocket();
+            socket.setReuseAddress(true);
+            socket.setTimeToLive(2);
+            return socket;
+        }
+
+        Inet4Address bindAddress = primaryIpv4Address(networkInterface);
+        if (bindAddress == null) {
+            throw new SocketException("No IPv4 address on interface " + networkInterface.getDisplayName());
+        }
+
+        MulticastSocket socket = new MulticastSocket(new InetSocketAddress(bindAddress, 0));
+        socket.setReuseAddress(true);
+        socket.setNetworkInterface(networkInterface);
+        socket.setTimeToLive(2);
+        return socket;
+    }
+
+    private void receiveResponsesUntil(MulticastSocket socket, String searchTarget,
+            Map<String, Map<String, String>> responses, long deadline) throws Exception {
+        while (true) {
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) {
+                return;
+            }
+
+            socket.setSoTimeout((int) Math.min(RECEIVE_SLICE_MS, remaining));
+            byte[] buffer = new byte[8192];
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                socket.receive(packet);
+                Map<String, String> headers = parseHeaders(packet);
+                if (!matchesSearchTarget(headers, searchTarget)) {
+                    continue;
+                }
+                responses.putIfAbsent(responseKey(headers), headers);
+            } catch (SocketTimeoutException ignored) {
+            }
+        }
     }
 
     private Map<String, String> parseHeaders(DatagramPacket packet) {
@@ -129,9 +197,25 @@ final class SsdpDiscoveryService {
         return response.get("remote-ip");
     }
 
+    private boolean matchesSearchTarget(Map<String, String> response, String searchTarget) {
+        String st = response.get("st");
+        if (st != null && st.equalsIgnoreCase(searchTarget)) {
+            return true;
+        }
+        String usn = response.get("usn");
+        return usn != null && usn.toLowerCase(Locale.ROOT).contains(searchTarget.toLowerCase(Locale.ROOT));
+    }
+
+    private String responseKey(Map<String, String> response) {
+        return String.join("|",
+                response.getOrDefault("usn", ""),
+                response.getOrDefault("location", ""),
+                response.getOrDefault("remote-ip", ""));
+    }
+
     private Map<String, Object> fetchSpeakerInfo(String host) {
         try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + host + ":8090/info"))
+            HttpRequest request = HttpRequest.newBuilder(new URI("http", null, host, 8090, "/info", null, null))
                     .timeout(Duration.ofSeconds(2))
                     .GET()
                     .build();
@@ -175,12 +259,87 @@ final class SsdpDiscoveryService {
         return value;
     }
 
+    private int defaultPort(URI uri) {
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            return -1;
+        }
+        return switch (scheme.toLowerCase(Locale.ROOT)) {
+            case "http" -> 80;
+            case "https" -> 443;
+            default -> -1;
+        };
+    }
+
+    private List<NetworkInterface> discoveryInterfaces() {
+        ArrayList<NetworkInterface> interfaces = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> candidates = NetworkInterface.getNetworkInterfaces();
+            while (candidates != null && candidates.hasMoreElements()) {
+                NetworkInterface networkInterface = candidates.nextElement();
+                if (isDiscoveryInterface(networkInterface)) {
+                    interfaces.add(networkInterface);
+                }
+            }
+        } catch (SocketException ignored) {
+        }
+        interfaces.sort(Comparator
+                .comparingInt(this::interfacePriority)
+                .thenComparingInt(NetworkInterface::getIndex));
+        return interfaces;
+    }
+
+    private boolean isDiscoveryInterface(NetworkInterface networkInterface) {
+        try {
+            if (!networkInterface.isUp() || networkInterface.isLoopback() || !networkInterface.supportsMulticast()) {
+                return false;
+            }
+            if (networkInterface.isVirtual()) {
+                return false;
+            }
+        } catch (SocketException exception) {
+            return false;
+        }
+
+        String descriptor = (networkInterface.getName() + " " + networkInterface.getDisplayName()).toLowerCase(Locale.ROOT);
+        if (descriptor.contains("docker") || descriptor.contains("vbox") || descriptor.contains("vmware")
+                || descriptor.contains("hyper-v") || descriptor.contains("loopback") || descriptor.contains("bluetooth")
+                || descriptor.contains("teredo") || descriptor.contains("tunnel")) {
+            return false;
+        }
+
+        return primaryIpv4Address(networkInterface) != null;
+    }
+
+    private int interfacePriority(NetworkInterface networkInterface) {
+        String descriptor = (networkInterface.getName() + " " + networkInterface.getDisplayName()).toLowerCase(Locale.ROOT);
+        if (descriptor.contains("ethernet") || descriptor.startsWith("eth") || descriptor.startsWith("en")) {
+            return 0;
+        }
+        if (descriptor.contains("wi-fi") || descriptor.contains("wifi") || descriptor.contains("wlan")
+                || descriptor.startsWith("wl")) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private Inet4Address primaryIpv4Address(NetworkInterface networkInterface) {
+        Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+        while (addresses.hasMoreElements()) {
+            InetAddress address = addresses.nextElement();
+            if (address instanceof Inet4Address inet4Address && !inet4Address.isLoopbackAddress()) {
+                return inet4Address;
+            }
+        }
+        return null;
+    }
+
     private String createSearchPayload(String searchTarget) {
         return String.join("\r\n",
                 "M-SEARCH * HTTP/1.1",
                 "Host:239.255.255.250:1900",
                 "Man:\"ssdp:discover\"",
-                "MX:3",
+                "MX:" + MX_SECONDS,
                 "ST:" + searchTarget,
                 "",
                 "");
