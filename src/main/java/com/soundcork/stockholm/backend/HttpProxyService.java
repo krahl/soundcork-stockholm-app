@@ -12,6 +12,10 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
@@ -77,6 +81,15 @@ final class HttpProxyService {
     void handle(HttpExchange exchange) throws IOException {
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
         String encodedTarget = queryParam(exchange, "url");
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace(
+                    "Proxy request received from frontend: method={}, requestUri={}, encodedTarget={}, remoteAddress={}, headers={}",
+                    method,
+                    exchange.getRequestURI(),
+                    encodedTarget,
+                    exchange.getRemoteAddress(),
+                    formatHeaders(exchange.getRequestHeaders()));
+        }
         if (encodedTarget == null || encodedTarget.isBlank()) {
             BackendApplication.sendText(exchange, 400, "Missing url query parameter", "text/plain; charset=UTF-8");
             return;
@@ -107,9 +120,18 @@ final class HttpProxyService {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(target)
                 .timeout(REQUEST_TIMEOUT)
                 .method(method, bodyPublisher(method, requestBody));
-        copyRequestHeaders(exchange.getRequestHeaders(), requestBuilder);
+        HeaderCopy requestHeaderCopy = copyRequestHeaders(exchange.getRequestHeaders(), requestBuilder);
 
         LOGGER.debug("Proxying {} request to {}", method, target);
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace(
+                    "Proxy request forwarded to target: method={}, target={}, requestBodyBytes={}, forwardedHeaders={}, droppedHeaders={}",
+                    method,
+                    target,
+                    requestBody.length,
+                    formatHeaders(requestHeaderCopy.forwarded()),
+                    formatHeaders(requestHeaderCopy.blocked()));
+        }
 
         HttpResponse<byte[]> response;
         try {
@@ -171,23 +193,44 @@ final class HttpProxyService {
         return HttpRequest.BodyPublishers.ofByteArray(requestBody);
     }
 
-    private void copyRequestHeaders(Headers requestHeaders, HttpRequest.Builder requestBuilder) {
-        for (Map.Entry<String, java.util.List<String>> entry : requestHeaders.entrySet()) {
+    private HeaderCopy copyRequestHeaders(Headers requestHeaders, HttpRequest.Builder requestBuilder) {
+        LinkedHashMap<String, List<String>> forwarded = new LinkedHashMap<>();
+        LinkedHashMap<String, List<String>> blocked = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : requestHeaders.entrySet()) {
             String name = entry.getKey();
+            List<String> values = entry.getValue() == null ? List.of() : List.copyOf(entry.getValue());
             if (name == null || BLOCKED_REQUEST_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+                if (name != null) {
+                    blocked.put(name, values);
+                }
                 continue;
             }
+            forwarded.put(name, values);
             for (String value : entry.getValue()) {
                 requestBuilder.header(name, value);
             }
         }
+        return new HeaderCopy(forwarded, blocked);
     }
 
     private void relayResponse(HttpExchange exchange, String method, HttpResponse<byte[]> response) throws IOException {
         byte[] body = response.body() == null ? new byte[0] : response.body();
         Headers responseHeaders = exchange.getResponseHeaders();
-        copyResponseHeaders(response.headers(), responseHeaders);
+        HeaderCopy responseHeaderCopy = copyResponseHeaders(response.headers(), responseHeaders);
         responseHeaders.set("Cache-Control", "no-store");
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace(
+                    "Proxy response received from target: method={}, status={}, responseBodyBytes={}, targetHeaders={}",
+                    method,
+                    response.statusCode(),
+                    body.length,
+                    formatHeaders(response.headers().map()));
+            LOGGER.trace(
+                    "Proxy response forwarded to frontend: relayedHeaders={}, backendAddedHeaders={}, droppedHeaders={}",
+                    formatHeaders(responseHeaderCopy.forwarded()),
+                    formatHeaders(Map.of("Cache-Control", List.of("no-store"))),
+                    formatHeaders(responseHeaderCopy.blocked()));
+        }
 
         boolean bodyAllowed = !"HEAD".equals(method)
                 && response.statusCode() != 204
@@ -202,14 +245,22 @@ final class HttpProxyService {
         }
     }
 
-    private void copyResponseHeaders(HttpHeaders httpHeaders, Headers responseHeaders) {
-        for (Map.Entry<String, java.util.List<String>> entry : httpHeaders.map().entrySet()) {
+    private HeaderCopy copyResponseHeaders(HttpHeaders httpHeaders, Headers responseHeaders) {
+        LinkedHashMap<String, List<String>> forwarded = new LinkedHashMap<>();
+        LinkedHashMap<String, List<String>> blocked = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : httpHeaders.map().entrySet()) {
             String name = entry.getKey();
+            List<String> values = entry.getValue() == null ? List.of() : List.copyOf(entry.getValue());
             if (name == null || BLOCKED_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+                if (name != null) {
+                    blocked.put(name, values);
+                }
                 continue;
             }
-            responseHeaders.put(name, entry.getValue());
+            forwarded.put(name, values);
+            responseHeaders.put(name, values);
         }
+        return new HeaderCopy(forwarded, blocked);
     }
 
     private String queryParam(HttpExchange exchange, String name) {
@@ -224,5 +275,29 @@ final class HttpProxyService {
             }
         }
         return null;
+    }
+
+    private String formatHeaders(Map<String, ? extends List<String>> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return "{}";
+        }
+        ArrayList<Map.Entry<String, ? extends List<String>>> entries = new ArrayList<>(headers.entrySet());
+        entries.sort(Comparator.comparing((Map.Entry<String, ? extends List<String>> entry) ->
+                entry.getKey() == null ? "" : entry.getKey().toLowerCase(Locale.ROOT))
+                .thenComparing(entry -> entry.getKey() == null ? "" : entry.getKey()));
+
+        StringBuilder builder = new StringBuilder("{");
+        for (int i = 0; i < entries.size(); i++) {
+            Map.Entry<String, ? extends List<String>> entry = entries.get(i);
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(entry.getKey()).append("=").append(entry.getValue());
+        }
+        builder.append("}");
+        return builder.toString();
+    }
+
+    private record HeaderCopy(Map<String, List<String>> forwarded, Map<String, List<String>> blocked) {
     }
 }
