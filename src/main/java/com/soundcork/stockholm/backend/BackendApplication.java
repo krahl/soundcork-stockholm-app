@@ -26,16 +26,18 @@ public final class BackendApplication {
         Path workspaceRoot = resolveWorkspaceRoot();
         Path stockholmRoot = workspaceRoot.resolve("stockholm").normalize();
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
+        BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
+        LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
 
         InetSocketAddress socketAddress = new InetSocketAddress("0.0.0.0", 8088);
         HttpServer server = HttpServer.create(socketAddress, 0);
         server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
         server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService));
-        server.createContext("/", new StaticStockholmHandler(stockholmRoot));
+        server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("Shutting down Stockholm backend");
@@ -120,9 +122,11 @@ public final class BackendApplication {
 
     private static final class StaticStockholmHandler implements HttpHandler {
         private final Path stockholmRoot;
+        private final BackendConfig backendConfig;
 
-        private StaticStockholmHandler(Path stockholmRoot) {
+        private StaticStockholmHandler(Path stockholmRoot, BackendConfig backendConfig) {
             this.stockholmRoot = stockholmRoot;
+            this.backendConfig = backendConfig;
         }
 
         @Override
@@ -143,6 +147,7 @@ public final class BackendApplication {
 
             byte[] bytes = Files.readAllBytes(file);
             Headers headers = exchange.getResponseHeaders();
+            applyFrontendLoggingCookie(headers);
             headers.set("Content-Type", contentType(file));
             headers.set("Cache-Control", "no-store");
             exchange.sendResponseHeaders(200, "HEAD".equalsIgnoreCase(exchange.getRequestMethod()) ? -1 : bytes.length);
@@ -170,6 +175,15 @@ public final class BackendApplication {
                 return Files.exists(index) ? index : null;
             }
             return resolved;
+        }
+
+        private void applyFrontendLoggingCookie(Headers headers) {
+            String cookieValue = backendConfig.shouldEnableFrontendDebug()
+                    ? "stockholmFrontendLoggingLevel=" + backendConfig.frontendLoggingLevel()
+                            + "; Path=/; SameSite=Lax"
+                    : "stockholmFrontendLoggingLevel=; Max-Age=0; Path=/; SameSite=Lax";
+            headers.add("Set-Cookie", cookieValue);
+            LOGGER.debug("Applied frontend logging cookie with level {}", backendConfig.frontendLoggingLevel());
         }
 
         private String contentType(Path file) {

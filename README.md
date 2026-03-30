@@ -6,7 +6,9 @@ Current scope:
 
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
-- Persists `getData` / `setData` values under `state/native-state.json`
+- Persists `getData` / `setData` values under `backend/state/native-state.json`
+- Reads backend configuration from `backend/config/backend-config.json`
+- Uses backend configuration to control frontend `loggingLevel` / `showDebug`
 - Implements SSDP-based speaker discovery for `getDeviceList`
 - Implements SSDP-based media-server discovery for `getHrmsList`
 - Implements basic callback methods used during browser startup:
@@ -34,3 +36,5 @@ Then open:
 ```text
 http://127.0.0.1:8088/
 ```
+
+To disable frontend debug logging, set `frontendLoggingLevel` to `0` in `backend/config/backend-config.json`.
