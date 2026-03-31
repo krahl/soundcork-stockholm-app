@@ -35,7 +35,15 @@ public final class BackendApplication {
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
 
-        InetSocketAddress socketAddress = new InetSocketAddress("0.0.0.0", 8088);
+        // Read IP and port from environment variables, fallback to defaults
+        String bindIp = System.getenv().getOrDefault("BACKEND_BIND_IP", "0.0.0.0");
+        int bindPort;
+        try {
+            bindPort = Integer.parseInt(System.getenv().getOrDefault("BACKEND_PORT", "8088"));
+        } catch (NumberFormatException e) {
+            bindPort = 8088;
+        }
+        InetSocketAddress socketAddress = new InetSocketAddress(bindIp, bindPort);
         HttpServer server = HttpServer.create(socketAddress, 0);
         server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
