@@ -127,6 +127,41 @@ final class NativeBridgeService implements AutoCloseable {
         return SimpleJson.stringify(wrapper);
     }
 
+    String getStateValue(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return state.get(name);
+    }
+
+    void putStateValue(String name, String value) {
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        putStateValues(Map.of(name, value == null ? "" : value));
+    }
+
+    void putStateValues(Map<String, String> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return;
+        }
+        boolean changed = false;
+        for (Map.Entry<String, String> entry : updates.entrySet()) {
+            String name = entry.getKey();
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            String value = entry.getValue() == null ? "" : entry.getValue();
+            String previous = state.put(name, value);
+            if (!value.equals(previous)) {
+                changed = true;
+            }
+        }
+        if (changed) {
+            persistState();
+        }
+    }
+
     private void enqueueMethod(String clientId, String method, Object params) {
         LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
         payload.put("method", method);
