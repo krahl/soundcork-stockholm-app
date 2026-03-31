@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: .
+    image: soundcork-stockholm-app
+    # host network mode so that speakers can be found
+    network_mode: host
+    # If not in host mode
+    #ports:
+      #- 8088:8088
+    volumes:
+      - /opt/stockholm-app/state:/app/backend/state
+      # Optional: Mount custom logging config
+      #- /opt/stockholm-app/config/logback.xml:/app/logback.xml
+    environment:
+      - TZ=Europe/Berlin
+      # All interfaces (0.0.0.0), localhost (127.0.0.1) or custom host (192.168.0.123)
+      - BACKEND_BIND_IP=0.0.0.0
+      - BACKEND_PORT=8088
+      - BACKEND_URL=http://soundcork.local.example.com:8000
+      # marge/ suffix is important if used against soundcork
+      - AUTH_SUFFIX=http://soundcork.local.example.com:8000/marge/
+    restart: unless-stopped
