@@ -34,6 +34,7 @@ final class SoundcorkDataService {
     private final String soundcorkAppVersion;
     private final String defaultMargeUrl;
     private final String defaultUpdateUrl;
+    private final String defaultBmxRegistryUrl;
     private final String encryptedBmxToken;
     private final String encryptedBmxServerUrlAlt;
     private final String overrideKilo;
@@ -54,6 +55,7 @@ final class SoundcorkDataService {
         this.soundcorkAppVersion = stringValue(appVersions.get("bose_app"));
         this.defaultMargeUrl = normalizeBaseUrl(SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d0"))));
         this.defaultUpdateUrl = normalizeBaseUrl(SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d1"))));
+        this.defaultBmxRegistryUrl = blankToNull(SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d3"))));
         this.encryptedBmxToken = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d7")));
         this.encryptedBmxServerUrlAlt = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d8")));
         this.overrideKilo = stringValue(loadObject(overrideFile).get("kilo"));
@@ -64,12 +66,12 @@ final class SoundcorkDataService {
     }
 
     String currentKilo() {
+        if (SoundcorkCrypto.isHexString(overrideKilo)) {
+            return overrideKilo;
+        }
         String persistedKilo = bridgeService.getStateValue("constant.kilo");
         if (SoundcorkCrypto.isHexString(persistedKilo)) {
             return persistedKilo;
-        }
-        if (SoundcorkCrypto.isHexString(overrideKilo)) {
-            return overrideKilo;
         }
         return SoundcorkCrypto.DEFAULT_KILO;
     }
@@ -153,14 +155,14 @@ final class SoundcorkDataService {
     }
 
     String currentMargeUrl() {
-        return firstNonBlank(overrideMargeUrl(), normalizeBaseUrl(legacyFrameValue("f0")), defaultMargeUrl);
+        return firstNonBlank(overrideMargeUrl(), defaultMargeUrl, normalizeBaseUrl(legacyFrameValue("f0")));
     }
 
     String currentUpdateUrl() {
         return firstNonBlank(
                 normalizeBaseUrl(bridgeService.getStateValue("overrideUpdateURL")),
-                normalizeBaseUrl(legacyFrameValue("f1")),
-                defaultUpdateUrl);
+                defaultUpdateUrl,
+                normalizeBaseUrl(legacyFrameValue("f1")));
     }
 
     String bmxApiKey() {
@@ -274,7 +276,7 @@ final class SoundcorkDataService {
                 }
             }
         }
-        return blankToNull(legacyFrameValue("f3"));
+        return firstNonBlank(defaultBmxRegistryUrl, blankToNull(legacyFrameValue("f3")));
     }
 
     String decryptWithCurrentKilo(String encryptedHex) {

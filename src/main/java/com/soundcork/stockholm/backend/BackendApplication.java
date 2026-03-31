@@ -396,7 +396,11 @@ public final class BackendApplication {
                                 if (!/^f\\d+$/.test(key) || value === undefined || value === null) {
                                     return;
                                 }
-                                config.default["d" + key.substring(1)] = toBase64(value);
+                                var targetKey = "d" + key.substring(1);
+                                if (config.default[targetKey] === undefined || config.default[targetKey] === null
+                                        || config.default[targetKey] === "") {
+                                    config.default[targetKey] = toBase64(value);
+                                }
                             });
                             return config;
                         }
