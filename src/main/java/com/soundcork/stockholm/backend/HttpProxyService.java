@@ -33,6 +33,7 @@ final class HttpProxyService {
             "connection",
             "content-length",
             "cookie",
+            "forwarded",
             "host",
             "http2-settings",
             "keep-alive",
@@ -51,6 +52,11 @@ final class HttpProxyService {
             "trailer",
             "transfer-encoding",
             "upgrade",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-port",
+            "x-forwarded-proto",
+            "x-real-ip",
             "x-requested-with");
 
     private static final Set<String> BLOCKED_RESPONSE_HEADERS = Set.of(
@@ -162,15 +168,93 @@ final class HttpProxyService {
         int localPort = localAddress.getPort();
         int targetPort = target.getPort() >= 0 ? target.getPort() : defaultPort(target);
 
-        if (targetPort != localPort) {
-            return false;
+        // Direct match: target points at the server's own bound address/port
+        if (targetPort == localPort) {
+            if (host.equalsIgnoreCase(localName)
+                    || host.equalsIgnoreCase("localhost")
+                    || (localHost != null && host.equalsIgnoreCase(localHost))
+                    || host.equals("127.0.0.1")
+                    || host.equals("::1")) {
+                return true;
+            }
         }
 
-        return host.equalsIgnoreCase(localName)
-                || host.equalsIgnoreCase("localhost")
-                || (localHost != null && host.equalsIgnoreCase(localHost))
-                || host.equals("127.0.0.1")
-                || host.equals("::1");
+        // Reverse-proxy match: target points at the externally visible host/port
+        // (e.g. the app sits behind nginx at https://stapp.example.com:443 but binds on :8080)
+        String externalHost = resolveExternalHost(exchange.getRequestHeaders());
+        int externalPort = resolveExternalPort(exchange.getRequestHeaders());
+        if (externalHost != null && !externalHost.isBlank()
+                && host.equalsIgnoreCase(externalHost)
+                && targetPort == externalPort) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private String resolveExternalHost(Headers requestHeaders) {
+        // X-Forwarded-Host is set by reverse proxies and reflects the original Host
+        String forwardedHost = firstRequestHeader(requestHeaders, "x-forwarded-host");
+        if (forwardedHost != null && !forwardedHost.isBlank()) {
+            // May contain a port (e.g. "example.com:8443") — strip it
+            int colonIdx = forwardedHost.lastIndexOf(':');
+            return colonIdx >= 0 ? forwardedHost.substring(0, colonIdx) : forwardedHost;
+        }
+        // Fall back to the Host header (also reflects the public hostname when behind a proxy)
+        String hostHeader = firstRequestHeader(requestHeaders, "host");
+        if (hostHeader != null && !hostHeader.isBlank()) {
+            int colonIdx = hostHeader.lastIndexOf(':');
+            return colonIdx >= 0 ? hostHeader.substring(0, colonIdx) : hostHeader;
+        }
+        return null;
+    }
+
+    private int resolveExternalPort(Headers requestHeaders) {
+        // Explicit forwarded-port header takes highest priority
+        String forwardedPort = firstRequestHeader(requestHeaders, "x-forwarded-port");
+        if (forwardedPort != null && !forwardedPort.isBlank()) {
+            try {
+                return Integer.parseInt(forwardedPort.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        // Port embedded in X-Forwarded-Host (e.g. "example.com:8443")
+        String forwardedHost = firstRequestHeader(requestHeaders, "x-forwarded-host");
+        if (forwardedHost != null) {
+            int colonIdx = forwardedHost.lastIndexOf(':');
+            if (colonIdx >= 0) {
+                try {
+                    return Integer.parseInt(forwardedHost.substring(colonIdx + 1).trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        // Port embedded in Host header
+        String hostHeader = firstRequestHeader(requestHeaders, "host");
+        if (hostHeader != null) {
+            int colonIdx = hostHeader.lastIndexOf(':');
+            if (colonIdx >= 0) {
+                try {
+                    return Integer.parseInt(hostHeader.substring(colonIdx + 1).trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        // Derive from the forwarded protocol
+        String proto = firstRequestHeader(requestHeaders, "x-forwarded-proto");
+        return "https".equalsIgnoreCase(proto) ? 443 : 80;
+    }
+
+    private String firstRequestHeader(Headers headers, String name) {
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                List<String> values = sanitizeHeaderValues(entry.getValue());
+                if (!values.isEmpty()) {
+                    return values.get(0);
+                }
+            }
+        }
+        return null;
     }
 
     private int defaultPort(URI target) {
@@ -501,7 +585,10 @@ final class HttpProxyService {
         for (Map.Entry<String, List<String>> entry : httpHeaders.map().entrySet()) {
             String name = entry.getKey();
             List<String> values = entry.getValue() == null ? List.of() : List.copyOf(entry.getValue());
-            if (name == null || BLOCKED_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+            // HTTP/2 pseudo-headers (e.g. :status, :method) must never be forwarded as
+            // real HTTP/1.1 headers — doing so produces a malformed response that causes
+            // reverse proxies (nginx, etc.) to return 502.
+            if (name == null || name.startsWith(":") || BLOCKED_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
                 if (name != null) {
                     blocked.put(name, values);
                 }
