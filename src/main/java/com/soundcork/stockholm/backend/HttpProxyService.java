@@ -87,6 +87,7 @@ final class HttpProxyService {
         this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
+                .version(HttpClient.Version.HTTP_1_1)
                 .build(), soundcorkDataService);
     }
 

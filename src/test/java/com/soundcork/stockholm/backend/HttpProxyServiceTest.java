@@ -45,6 +45,18 @@ final class HttpProxyServiceTest {
     Path tempDir;
 
     @Test
+    void defaultHttpClientUsesHttp11ToAvoidH2cUpgradeRequests() throws Exception {
+        TestContext context = createContext();
+        HttpProxyService service = new HttpProxyService(context.dataService());
+
+        java.lang.reflect.Field httpClientField = HttpProxyService.class.getDeclaredField("httpClient");
+        httpClientField.setAccessible(true);
+        HttpClient httpClient = (HttpClient) httpClientField.get(service);
+
+        assertEquals(HttpClient.Version.HTTP_1_1, httpClient.version());
+    }
+
+    @Test
     void successfulLoginStoresAccountIdAndCredentials() throws Exception {
         TestHttpClient httpClient = new TestHttpClient();
         httpClient.enqueueResponse(
