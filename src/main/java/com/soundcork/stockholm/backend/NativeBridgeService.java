@@ -90,8 +90,10 @@ final class NativeBridgeService implements AutoCloseable {
                 case "getConstant" -> enqueueCallbackResult(queueId, id, getConstant(params), "");
                 case "canPerformAutoAPSetup" -> enqueueCallbackResult(queueId, id, createAutoApSetupInfo(), "");
                 case "getDeviceList" -> submitAsync(queueId, id, () -> {
+                    String accountId = blankToNull(state.get("margeAccountID"));
                     LOGGER.debug("Starting renderer discovery for client '{}'", queueId);
                     List<Map<String, Object>> devices = discoveryService.discoverRenderers(
+                            accountId,
                             partial -> enqueueMethod(queueId, "devices", partial));
                     LOGGER.debug("Renderer discovery finished with {} device(s) for client '{}'",
                             devices.size(), queueId);
@@ -342,6 +344,14 @@ final class NativeBridgeService implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    private String blankToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.isEmpty() ? null : normalized;
     }
 
     @Override

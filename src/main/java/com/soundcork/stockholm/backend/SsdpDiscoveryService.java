@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.slf4j.Logger;
@@ -40,30 +41,60 @@ final class SsdpDiscoveryService {
     private static final String SERVER_ST = "urn:schemas-upnp-org:device:MediaServer:1";
     private static final Logger LOGGER = LoggerFactory.getLogger(SsdpDiscoveryService.class);
 
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(2))
-            .build();
+    private final HttpClient httpClient;
+    private final Searcher searcher;
+
+    SsdpDiscoveryService() {
+        this(HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(2))
+                .build(), null);
+    }
+
+    SsdpDiscoveryService(HttpClient httpClient, Searcher searcher) {
+        this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
+        this.searcher = searcher == null ? this::searchNetwork : searcher;
+    }
 
     List<Map<String, Object>> discoverRenderers() {
-        return discoverRenderers(null);
+        return discoverRenderers(null, null);
+    }
+
+    List<Map<String, Object>> discoverRenderers(String expectedAccountId) {
+        return discoverRenderers(expectedAccountId, null);
     }
 
     List<Map<String, Object>> discoverRenderers(Consumer<List<Map<String, Object>>> onDiscovered) {
+        return discoverRenderers(null, onDiscovered);
+    }
+
+    List<Map<String, Object>> discoverRenderers(String expectedAccountId,
+            Consumer<List<Map<String, Object>>> onDiscovered) {
         LOGGER.debug("Starting renderer SSDP discovery with probes={}, intervalMs={}, graceMs={}",
                 SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
+        String normalizedAccountId = normalizeAccountId(expectedAccountId);
+        if (normalizedAccountId != null) {
+            LOGGER.debug("Renderer discovery will filter for Soundcork account {}", normalizedAccountId);
+        }
         Map<String, Map<String, Object>> devices = new LinkedHashMap<>();
-        for (Map<String, String> response : search(RENDERER_ST)) {
+        for (Map<String, String> response : searcher.search(RENDERER_ST)) {
             String host = hostFromResponse(response);
             if (host == null || devices.containsKey(host)) {
                 continue;
             }
-            Map<String, Object> speaker = fetchSpeakerInfo(host);
-            if (speaker != null) {
-                devices.put(host, speaker);
-                LOGGER.debug("Discovered renderer {} at {}", speaker.get("uID"), host);
-                if (onDiscovered != null) {
-                    onDiscovered.accept(List.of(new LinkedHashMap<>(speaker)));
-                }
+            RendererInfo speaker = fetchSpeakerInfo(host);
+            if (speaker == null) {
+                continue;
+            }
+            if (!matchesAccount(speaker, normalizedAccountId)) {
+                LOGGER.debug("Ignoring renderer {} at {} because account {} does not match {}",
+                        speaker.uid(), host, speaker.accountId(), normalizedAccountId);
+                continue;
+            }
+            Map<String, Object> payload = speaker.toPayload();
+            devices.put(host, payload);
+            LOGGER.debug("Discovered renderer {} at {}", speaker.uid(), host);
+            if (onDiscovered != null) {
+                onDiscovered.accept(List.of(new LinkedHashMap<>(payload)));
             }
         }
         List<Map<String, Object>> results = devices.values().stream()
@@ -77,7 +108,7 @@ final class SsdpDiscoveryService {
         LOGGER.debug("Starting media-server SSDP discovery with probes={}, intervalMs={}, graceMs={}",
                 SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
         Map<String, Map<String, Object>> servers = new LinkedHashMap<>();
-        for (Map<String, String> response : search(SERVER_ST)) {
+        for (Map<String, String> response : searcher.search(SERVER_ST)) {
             String location = response.get("location");
             String usn = response.get("usn");
             if (location == null) {
@@ -104,7 +135,7 @@ final class SsdpDiscoveryService {
         return results;
     }
 
-    private List<Map<String, String>> search(String searchTarget) {
+    private List<Map<String, String>> searchNetwork(String searchTarget) {
         List<NetworkInterface> interfaces = discoveryInterfaces();
         LOGGER.debug("SSDP search target {} using interfaces {}",
                 searchTarget,
@@ -246,7 +277,7 @@ final class SsdpDiscoveryService {
                 response.getOrDefault("remote-ip", ""));
     }
 
-    private Map<String, Object> fetchSpeakerInfo(String host) {
+    private RendererInfo fetchSpeakerInfo(String host) {
         try {
             LOGGER.debug("Fetching renderer device info from {}:8090", host);
             HttpRequest request = HttpRequest.newBuilder(new URI("http", null, host, 8090, "/info", null, null))
@@ -270,14 +301,38 @@ final class SsdpDiscoveryService {
             if (attribute == null || attribute.getNodeValue().isBlank()) {
                 return null;
             }
-            LinkedHashMap<String, Object> speaker = new LinkedHashMap<>();
-            speaker.put("uID", attribute.getNodeValue().toUpperCase(Locale.ROOT));
-            speaker.put("ip", host);
-            return speaker;
+            return new RendererInfo(
+                    attribute.getNodeValue().toUpperCase(Locale.ROOT),
+                    host,
+                    normalizeAccountId(textContent(info, "margeAccountUUID")));
         } catch (Exception exception) {
             LOGGER.debug("Failed to fetch renderer device info from {}", host, exception);
             return null;
         }
+    }
+
+    private boolean matchesAccount(RendererInfo speaker, String expectedAccountId) {
+        return expectedAccountId == null || expectedAccountId.equals(speaker.accountId());
+    }
+
+    private String normalizeAccountId(String accountId) {
+        if (accountId == null) {
+            return null;
+        }
+        String normalized = accountId.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private String textContent(org.w3c.dom.Node parent, String tagName) {
+        if (!(parent instanceof org.w3c.dom.Element element)) {
+            return null;
+        }
+        var nodes = element.getElementsByTagName(tagName);
+        if (nodes.getLength() == 0) {
+            return null;
+        }
+        String text = nodes.item(0).getTextContent();
+        return text == null ? null : text.trim();
     }
 
     private String normalizeUuid(String usn, String fallback) {
@@ -389,5 +444,19 @@ final class SsdpDiscoveryService {
                 "ST:" + searchTarget,
                 "",
                 "");
+    }
+
+    @FunctionalInterface
+    interface Searcher {
+        List<Map<String, String>> search(String searchTarget);
+    }
+
+    private record RendererInfo(String uid, String ip, String accountId) {
+        Map<String, Object> toPayload() {
+            LinkedHashMap<String, Object> speaker = new LinkedHashMap<>();
+            speaker.put("uID", uid);
+            speaker.put("ip", ip);
+            return speaker;
+        }
     }
 }
