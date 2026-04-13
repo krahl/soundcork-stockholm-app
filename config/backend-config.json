@@ -1,3 +1,11 @@
 {
-    "frontendLoggingLevel": 2
+    "frontendLoggingLevel": 2,
+    "httpCapture": {
+        "enabled": false,
+        "mode": "pseudonymize",
+        "directory": "backend/state/http-capture",
+        "maxTextBodyBytes": 65536,
+        "maxBinaryBodyBytes": 8192,
+        "includeProxyErrors": true
+    }
 }

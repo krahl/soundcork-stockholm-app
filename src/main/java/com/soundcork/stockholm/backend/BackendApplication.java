@@ -30,10 +30,16 @@ public final class BackendApplication {
         BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         SoundcorkDataService soundcorkDataService = new SoundcorkDataService(workspaceRoot, bridgeService);
-        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService);
+        HttpTrafficCaptureService httpTrafficCaptureService = new HttpTrafficCaptureService(backendConfig.httpCapture());
+        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService, httpTrafficCaptureService);
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
+        LOGGER.debug(
+                "HTTP capture is {} with mode={} directory={}",
+                backendConfig.httpCapture().enabled() ? "enabled" : "disabled",
+                backendConfig.httpCapture().mode(),
+                backendConfig.httpCapture().directory());
 
         // Read IP and port from environment variables, fallback to defaults
         String bindIp = System.getenv().getOrDefault("BACKEND_BIND_IP", "0.0.0.0");

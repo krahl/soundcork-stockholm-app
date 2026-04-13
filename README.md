@@ -128,3 +128,10 @@ After you log in for the first time, the app will try to take you through settin
 - Bose login/OAuth flows appear to be unavailable and may become impossible as the SoundTouch cloud shutdown approaches.
 - HTTP reverse proxies do not yet work reliably; avoid TLS encrypted reverse proxies for now.
 - Since this app connects to SoundTouch speakers via unencrypted WebSockets, the browser may block the connection if the frontend is served over HTTPS. Use HTTP for the frontend.
+
+## Capture HTTP traffic
+
+To capture proxied HTTP traffic for later reverse engineering, enable the `httpCapture` section in
+`backend/config/backend-config.json`. The backend writes one NDJSON record per upstream exchange to
+`backend/state/http-capture/http-traffic-YYYY-MM-DD.ndjson`, with configurable `raw`, `redact`, or
+`pseudonymize` privacy modes.

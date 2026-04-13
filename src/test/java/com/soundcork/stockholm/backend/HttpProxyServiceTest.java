@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -414,6 +415,229 @@ final class HttpProxyServiceTest {
                 request.headers().firstValue("X-Bose-Apigee-Key").orElseThrow());
     }
 
+    @Test
+    void httpCaptureStoresOriginalEncodedAndEffectiveTargets() throws Exception {
+        TestHttpClient httpClient = new TestHttpClient();
+        httpClient.enqueueResponse(request -> true, TestHttpResponse.xml(200, "<ok/>", Map.of()));
+
+        TestContext context = createContext();
+        context.bridgeService().putStateValue("overrideMargeURL", "https://alt-streaming.bose.com/");
+        Path captureDir = captureDir(context);
+        HttpTrafficCaptureService captureService = captureService(
+                captureDir,
+                BackendConfig.HttpCaptureMode.RAW,
+                65_536,
+                8_192,
+                true);
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), captureService);
+
+        String originalUrl = "https://streaming.bose.com/streaming/account/42/sources";
+        TestHttpExchange exchange = TestHttpExchange.get(proxyUri(originalUrl), new Headers());
+
+        service.handle(exchange);
+
+        Map<String, Object> record = readCaptureRecords(captureDir).get(0);
+        Map<String, Object> frontend = object(record, "frontend");
+        Map<String, Object> upstreamRequest = object(record, "upstreamRequest");
+
+        assertEquals(java.net.URLEncoder.encode(originalUrl, StandardCharsets.UTF_8), frontend.get("encodedTarget"));
+        assertEquals(originalUrl, frontend.get("decodedOriginalTarget"));
+        assertEquals(originalUrl, upstreamRequest.get("intendedUrl"));
+        assertEquals("https://alt-streaming.bose.com/streaming/account/42/sources", upstreamRequest.get("effectiveUrl"));
+    }
+
+    @Test
+    void httpCaptureCorrelatesInitialEnvironmentLookupAndRetrySteps() throws Exception {
+        TestHttpClient httpClient = new TestHttpClient();
+        AtomicInteger loginCount = new AtomicInteger();
+        httpClient.enqueueResponse(
+                request -> request.uri().getPath().endsWith("/streaming/account/login") && loginCount.getAndIncrement() == 0,
+                TestHttpResponse.xml(
+                        400,
+                        """
+                                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                                <status><message>Switch environment.</message><status-code>4033</status-code></status>
+                                """,
+                        Map.of()));
+        httpClient.enqueueResponse(
+                request -> request.uri().getPath().contains("/streaming/account/email/user%40example.com/environment"),
+                TestHttpResponse.xml(
+                        200,
+                        """
+                                <?xml version="1.0" encoding="UTF-8"?>
+                                <account_profile>
+                                  <streamingURL>https://alt-streaming.bose.com/</streamingURL>
+                                  <updateURL>https://updates-alt.bose.com/</updateURL>
+                                </account_profile>
+                                """,
+                        Map.of()));
+        httpClient.enqueueResponse(
+                request -> request.uri().getHost().equals("alt-streaming.bose.com")
+                        && request.uri().getPath().endsWith("/streaming/account/login"),
+                TestHttpResponse.xml(
+                        200,
+                        """
+                                <?xml version="1.0" encoding="UTF-8"?>
+                                <account id="switched-account"><accountStatus>ACTIVE</accountStatus></account>
+                                """,
+                        Map.of("Credentials", List.of("Bearer switched-token"))));
+
+        TestContext context = createContext();
+        Path captureDir = captureDir(context);
+        HttpTrafficCaptureService captureService = captureService(
+                captureDir,
+                BackendConfig.HttpCaptureMode.RAW,
+                65_536,
+                8_192,
+                true);
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), captureService);
+
+        TestHttpExchange exchange = TestHttpExchange.post(
+                proxyUri("https://streaming.bose.com/streaming/account/login"),
+                """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <login><username>user@example.com</username><password>pw</password></login>
+                        """,
+                new Headers());
+
+        service.handle(exchange);
+
+        List<Map<String, Object>> records = readCaptureRecords(captureDir);
+        assertEquals(3, records.size());
+        assertEquals(List.of("initial", "environment_lookup", "login_retry"), steps(records));
+        assertEquals(records.get(0).get("flowId"), records.get(1).get("flowId"));
+        assertEquals(records.get(1).get("flowId"), records.get(2).get("flowId"));
+    }
+
+    @Test
+    void httpCapturePseudonymizesSensitiveHeadersAndBodyFields() throws Exception {
+        TestHttpClient httpClient = new TestHttpClient();
+        AtomicInteger loginCount = new AtomicInteger();
+        httpClient.enqueueResponse(
+                request -> request.uri().getPath().endsWith("/streaming/account/login") && loginCount.getAndIncrement() == 0,
+                TestHttpResponse.xml(
+                        400,
+                        """
+                                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                                <status><message>Switch environment.</message><status-code>4033</status-code></status>
+                                """,
+                        Map.of()));
+        httpClient.enqueueResponse(
+                request -> request.uri().getPath().contains("/streaming/account/email/privacy%40example.com/environment"),
+                TestHttpResponse.xml(
+                        200,
+                        """
+                                <?xml version="1.0" encoding="UTF-8"?>
+                                <account_profile>
+                                  <streamingURL>https://alt-streaming.bose.com/</streamingURL>
+                                  <updateURL>https://updates-alt.bose.com/</updateURL>
+                                </account_profile>
+                                """,
+                        Map.of("Refresh", List.of("Bearer hidden-refresh"))));
+        httpClient.enqueueResponse(
+                request -> request.uri().getHost().equals("alt-streaming.bose.com")
+                        && request.uri().getPath().endsWith("/streaming/account/login"),
+                TestHttpResponse.xml(
+                        200,
+                        """
+                                <?xml version="1.0" encoding="UTF-8"?>
+                                <account id="privacy-account"><accountStatus>ACTIVE</accountStatus></account>
+                                """,
+                        Map.of("Credentials", List.of("Bearer hidden-credentials"))));
+
+        TestContext context = createContext();
+        Path captureDir = captureDir(context);
+        HttpTrafficCaptureService captureService = captureService(
+                captureDir,
+                BackendConfig.HttpCaptureMode.PSEUDONYMIZE,
+                65_536,
+                8_192,
+                true);
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), captureService);
+
+        String password = "UltraSecret42!";
+        TestHttpExchange exchange = TestHttpExchange.post(
+                proxyUri("https://streaming.bose.com/streaming/account/login"),
+                """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <login><username>privacy@example.com</username><password>%s</password></login>
+                        """.formatted(password),
+                new Headers());
+
+        service.handle(exchange);
+
+        String captureText = readCaptureText(captureDir);
+        assertFalse(captureText.contains("privacy@example.com"));
+        assertFalse(captureText.contains(password));
+        assertFalse(captureText.contains("Bearer hidden-refresh"));
+        assertFalse(captureText.contains("Bearer hidden-credentials"));
+        assertFalse(captureText.contains("Basic cHJpdmFjeUBleGFtcGxlLmNvbTpVbHRyYVNlY3JldDQyIQ=="));
+        assertTrue(captureText.contains("<pseudo:"));
+    }
+
+    @Test
+    void httpCaptureTruncatesTextAndBinaryBodies() throws Exception {
+        TestHttpClient httpClient = new TestHttpClient();
+        httpClient.enqueueResponse(
+                request -> true,
+                new TestHttpResponse(
+                        200,
+                        new byte[] {0, 1, 2, 3, 4, 5},
+                        Map.of("Content-Type", List.of("application/octet-stream"))));
+
+        TestContext context = createContext();
+        Path captureDir = captureDir(context);
+        HttpTrafficCaptureService captureService = captureService(
+                captureDir,
+                BackendConfig.HttpCaptureMode.RAW,
+                8,
+                4,
+                true);
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), captureService);
+
+        Headers headers = new Headers();
+        headers.add("Content-Type", "application/json");
+        TestHttpExchange exchange = TestHttpExchange.post(
+                proxyUri("https://content.api.bose.io/bmx/registry/v1/services"),
+                "{\"abcdef\":\"1234567890\"}",
+                headers);
+
+        service.handle(exchange);
+
+        Map<String, Object> record = readCaptureRecords(captureDir).get(0);
+        Map<String, Object> requestBody = object(object(record, "upstreamRequest"), "body");
+        Map<String, Object> responseBody = object(object(record, "upstreamResponse"), "body");
+
+        assertEquals(Boolean.TRUE, requestBody.get("truncated"));
+        assertEquals(Boolean.TRUE, responseBody.get("truncated"));
+        assertEquals("{\"abcdef", requestBody.get("text"));
+        assertEquals("AAECAw==", responseBody.get("base64"));
+    }
+
+    @Test
+    void httpCaptureIncludesProxyValidationErrorsWhenEnabled() throws Exception {
+        TestContext context = createContext();
+        Path captureDir = captureDir(context);
+        HttpTrafficCaptureService captureService = captureService(
+                captureDir,
+                BackendConfig.HttpCaptureMode.RAW,
+                65_536,
+                8_192,
+                true);
+        HttpProxyService service = new HttpProxyService(new TestHttpClient(), context.dataService(), captureService);
+
+        TestHttpExchange exchange = TestHttpExchange.get(
+                URI.create("http://localhost:8088/api/http-proxy"),
+                new Headers());
+
+        service.handle(exchange);
+
+        Map<String, Object> record = readCaptureRecords(captureDir).get(0);
+        assertEquals("proxy_error", record.get("type"));
+        assertEquals(400L, object(record, "proxyResult").get("status"));
+        assertEquals("missing_url", object(record, "proxyResult").get("reason"));
+    }
+
     private TestContext createContext() throws IOException {
         Path workspaceRoot = tempDir.resolve("workspace");
         Path stockholmJson = workspaceRoot.resolve("stockholm").resolve("json");
@@ -441,12 +665,66 @@ final class HttpProxyServiceTest {
                 """, StandardCharsets.UTF_8);
         Files.writeString(stockholmJson.resolve("override.json"), """
                 {"kilo":"a7928d7b43dcd49f0af31e5aeed26458"}
-                """, StandardCharsets.UTF_8);
+        """, StandardCharsets.UTF_8);
 
         Path stateFile = backendState.resolve("native-state.json");
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         SoundcorkDataService dataService = new SoundcorkDataService(workspaceRoot, bridgeService);
-        return new TestContext(bridgeService, dataService);
+        return new TestContext(workspaceRoot, bridgeService, dataService);
+    }
+
+    private HttpTrafficCaptureService captureService(
+            Path captureDir,
+            BackendConfig.HttpCaptureMode mode,
+            int maxTextBodyBytes,
+            int maxBinaryBodyBytes,
+            boolean includeProxyErrors) {
+        return new HttpTrafficCaptureService(new BackendConfig.HttpCaptureConfig(
+                true,
+                mode,
+                captureDir,
+                maxTextBodyBytes,
+                maxBinaryBodyBytes,
+                includeProxyErrors));
+    }
+
+    private Path captureDir(TestContext context) {
+        return context.workspaceRoot().resolve("backend").resolve("state").resolve("http-capture");
+    }
+
+    private List<Map<String, Object>> readCaptureRecords(Path captureDir) throws IOException {
+        Path captureFile = Files.list(captureDir)
+                .filter(path -> path.getFileName().toString().endsWith(".ndjson"))
+                .findFirst()
+                .orElseThrow();
+        ArrayList<Map<String, Object>> records = new ArrayList<>();
+        for (String line : Files.readAllLines(captureFile, StandardCharsets.UTF_8)) {
+            if (line.isBlank()) {
+                continue;
+            }
+            records.add(SimpleJson.asObject(SimpleJson.parse(line)));
+        }
+        return records;
+    }
+
+    private String readCaptureText(Path captureDir) throws IOException {
+        Path captureFile = Files.list(captureDir)
+                .filter(path -> path.getFileName().toString().endsWith(".ndjson"))
+                .findFirst()
+                .orElseThrow();
+        return Files.readString(captureFile, StandardCharsets.UTF_8);
+    }
+
+    private List<String> steps(List<Map<String, Object>> records) {
+        ArrayList<String> steps = new ArrayList<>();
+        for (Map<String, Object> record : records) {
+            steps.add(String.valueOf(record.get("step")));
+        }
+        return steps;
+    }
+
+    private Map<String, Object> object(Map<String, Object> source, String key) {
+        return SimpleJson.asObject(source.get(key));
     }
 
     private URI proxyUri(String target) {
@@ -454,7 +732,7 @@ final class HttpProxyServiceTest {
                 + java.net.URLEncoder.encode(target, StandardCharsets.UTF_8));
     }
 
-    private record TestContext(NativeBridgeService bridgeService, SoundcorkDataService dataService) {
+    private record TestContext(Path workspaceRoot, NativeBridgeService bridgeService, SoundcorkDataService dataService) {
     }
 
     private static final class TestHttpExchange extends HttpExchange {

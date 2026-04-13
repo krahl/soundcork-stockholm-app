@@ -6,18 +6,18 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -82,23 +82,34 @@ final class HttpProxyService {
 
     private final SoundcorkDataService soundcorkDataService;
     private final HttpClient httpClient;
+    private final HttpTrafficCaptureService captureService;
 
     HttpProxyService(SoundcorkDataService soundcorkDataService) {
+        this(soundcorkDataService, HttpTrafficCaptureService.disabled());
+    }
+
+    HttpProxyService(SoundcorkDataService soundcorkDataService, HttpTrafficCaptureService captureService) {
         this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .version(HttpClient.Version.HTTP_1_1)
-                .build(), soundcorkDataService);
+                .build(), soundcorkDataService, captureService);
     }
 
     HttpProxyService(HttpClient httpClient, SoundcorkDataService soundcorkDataService) {
+        this(httpClient, soundcorkDataService, HttpTrafficCaptureService.disabled());
+    }
+
+    HttpProxyService(HttpClient httpClient, SoundcorkDataService soundcorkDataService, HttpTrafficCaptureService captureService) {
         this.httpClient = httpClient;
         this.soundcorkDataService = soundcorkDataService;
+        this.captureService = captureService == null ? HttpTrafficCaptureService.disabled() : captureService;
     }
 
     void handle(HttpExchange exchange) throws IOException {
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
         String encodedTarget = queryParam(exchange, "url");
+        HttpTrafficCaptureService.CaptureContext captureContext = captureService.beginRequest(exchange, method, encodedTarget);
         if (LOGGER.isTraceEnabled()) {
             LOGGER.trace(
                     "Proxy request received from frontend: method={}, requestUri={}, encodedTarget={}, remoteAddress={}, headers={}",
@@ -109,6 +120,7 @@ final class HttpProxyService {
                     formatHeaders(exchange.getRequestHeaders()));
         }
         if (encodedTarget == null || encodedTarget.isBlank()) {
+            captureService.captureProxyError(captureContext, null, "missing_url", 400, "Missing url query parameter", null);
             BackendApplication.sendText(exchange, 400, "Missing url query parameter", "text/plain; charset=UTF-8");
             return;
         }
@@ -118,32 +130,42 @@ final class HttpProxyService {
             target = URI.create(URLDecoder.decode(encodedTarget, StandardCharsets.UTF_8));
         } catch (IllegalArgumentException exception) {
             LOGGER.debug("Rejected malformed proxy target '{}'", encodedTarget, exception);
+            captureService.captureProxyError(captureContext, null, "invalid_target", 400, "Invalid proxy target", exception);
             BackendApplication.sendText(exchange, 400, "Invalid proxy target", "text/plain; charset=UTF-8");
             return;
         }
 
         if (!isSupportedTarget(target)) {
             LOGGER.debug("Rejected unsupported proxy target {}", target);
+            captureService.captureProxyError(captureContext, target, "unsupported_target", 400, "Unsupported proxy target", null);
             BackendApplication.sendText(exchange, 400, "Unsupported proxy target", "text/plain; charset=UTF-8");
             return;
         }
 
         if (isProxyLoop(exchange, target)) {
             LOGGER.debug("Rejected proxy loop for target {}", target);
+            captureService.captureProxyError(captureContext, target, "proxy_loop", 400, "Refusing to proxy proxy endpoint", null);
             BackendApplication.sendText(exchange, 400, "Refusing to proxy proxy endpoint", "text/plain; charset=UTF-8");
             return;
         }
 
         byte[] requestBody = exchange.getRequestBody().readAllBytes();
         try {
-            RequestOutcome outcome = executeWithCloudHandling(method, exchange.getRequestHeaders(), target, requestBody);
+            RequestOutcome outcome = executeWithCloudHandling(
+                    method,
+                    exchange.getRequestHeaders(),
+                    target,
+                    requestBody,
+                    captureContext);
             relayResponse(exchange, method, outcome.response());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             LOGGER.warn("Interrupted while proxying {} to {}", method, target, exception);
+            captureService.captureProxyError(captureContext, target, "interrupted", 502, "Proxy request interrupted", exception);
             BackendApplication.sendText(exchange, 502, "Proxy request interrupted", "text/plain; charset=UTF-8");
         } catch (IOException | RuntimeException exception) {
             LOGGER.warn("Failed proxy request {} {}", method, target, exception);
+            captureService.captureProxyError(captureContext, target, "proxy_failure", 502, "Proxy request failed", exception);
             BackendApplication.sendText(exchange, 502, "Proxy request failed", "text/plain; charset=UTF-8");
         }
     }
@@ -169,7 +191,6 @@ final class HttpProxyService {
         int localPort = localAddress.getPort();
         int targetPort = target.getPort() >= 0 ? target.getPort() : defaultPort(target);
 
-        // Direct match: target points at the server's own bound address/port
         if (targetPort == localPort) {
             if (host.equalsIgnoreCase(localName)
                     || host.equalsIgnoreCase("localhost")
@@ -180,28 +201,19 @@ final class HttpProxyService {
             }
         }
 
-        // Reverse-proxy match: target points at the externally visible host/port
-        // (e.g. the app sits behind nginx at https://stapp.example.com:443 but binds on :8080)
         String externalHost = resolveExternalHost(exchange.getRequestHeaders());
         int externalPort = resolveExternalPort(exchange.getRequestHeaders());
-        if (externalHost != null && !externalHost.isBlank()
+        return externalHost != null && !externalHost.isBlank()
                 && host.equalsIgnoreCase(externalHost)
-                && targetPort == externalPort) {
-            return true;
-        }
-
-        return false;
+                && targetPort == externalPort;
     }
 
     private String resolveExternalHost(Headers requestHeaders) {
-        // X-Forwarded-Host is set by reverse proxies and reflects the original Host
         String forwardedHost = firstRequestHeader(requestHeaders, "x-forwarded-host");
         if (forwardedHost != null && !forwardedHost.isBlank()) {
-            // May contain a port (e.g. "example.com:8443") — strip it
             int colonIdx = forwardedHost.lastIndexOf(':');
             return colonIdx >= 0 ? forwardedHost.substring(0, colonIdx) : forwardedHost;
         }
-        // Fall back to the Host header (also reflects the public hostname when behind a proxy)
         String hostHeader = firstRequestHeader(requestHeaders, "host");
         if (hostHeader != null && !hostHeader.isBlank()) {
             int colonIdx = hostHeader.lastIndexOf(':');
@@ -211,7 +223,6 @@ final class HttpProxyService {
     }
 
     private int resolveExternalPort(Headers requestHeaders) {
-        // Explicit forwarded-port header takes highest priority
         String forwardedPort = firstRequestHeader(requestHeaders, "x-forwarded-port");
         if (forwardedPort != null && !forwardedPort.isBlank()) {
             try {
@@ -219,7 +230,7 @@ final class HttpProxyService {
             } catch (NumberFormatException ignored) {
             }
         }
-        // Port embedded in X-Forwarded-Host (e.g. "example.com:8443")
+
         String forwardedHost = firstRequestHeader(requestHeaders, "x-forwarded-host");
         if (forwardedHost != null) {
             int colonIdx = forwardedHost.lastIndexOf(':');
@@ -230,7 +241,7 @@ final class HttpProxyService {
                 }
             }
         }
-        // Port embedded in Host header
+
         String hostHeader = firstRequestHeader(requestHeaders, "host");
         if (hostHeader != null) {
             int colonIdx = hostHeader.lastIndexOf(':');
@@ -241,7 +252,7 @@ final class HttpProxyService {
                 }
             }
         }
-        // Derive from the forwarded protocol
+
         String proto = firstRequestHeader(requestHeaders, "x-forwarded-proto");
         return "https".equalsIgnoreCase(proto) ? 443 : 80;
     }
@@ -269,12 +280,23 @@ final class HttpProxyService {
         return HttpRequest.BodyPublishers.ofByteArray(requestBody);
     }
 
-    private RequestOutcome executeWithCloudHandling(String method, Headers requestHeaders, URI target, byte[] requestBody)
-            throws IOException, InterruptedException {
-        RequestOutcome outcome = executeRequest(method, requestHeaders, target, requestBody);
+    private RequestOutcome executeWithCloudHandling(
+            String method,
+            Headers requestHeaders,
+            URI target,
+            byte[] requestBody,
+            HttpTrafficCaptureService.CaptureContext captureContext) throws IOException, InterruptedException {
+        RequestOutcome outcome = executeRequest(
+                method,
+                requestHeaders,
+                target,
+                requestBody,
+                captureContext,
+                "initial",
+                Map.of());
 
         if (isLoginRequest(method, outcome.target())) {
-            outcome = retryLoginWithEnvironmentIfNeeded(method, requestHeaders, outcome, requestBody);
+            outcome = retryLoginWithEnvironmentIfNeeded(method, requestHeaders, outcome, requestBody, captureContext);
             captureSuccessfulLogin(outcome.response());
         }
 
@@ -286,7 +308,8 @@ final class HttpProxyService {
             String method,
             Headers requestHeaders,
             RequestOutcome outcome,
-            byte[] requestBody) throws IOException, InterruptedException {
+            byte[] requestBody,
+            HttpTrafficCaptureService.CaptureContext captureContext) throws IOException, InterruptedException {
         if (!"4033".equals(SoundcorkCloudXml.extractStatusCode(outcome.response().body()))) {
             return outcome;
         }
@@ -297,27 +320,38 @@ final class HttpProxyService {
             return outcome;
         }
 
-        SoundcorkCloudXml.EnvironmentInfo environment = fetchEnvironment(requestHeaders, outcome.target(), credentials);
+        SoundcorkCloudXml.EnvironmentInfo environment = fetchEnvironment(requestHeaders, outcome.target(), credentials, captureContext);
         if (environment == null || environment.streamingUrl() == null || environment.streamingUrl().isBlank()) {
             LOGGER.debug("Cannot retry login after 4033 because no valid environment payload was returned");
             return outcome;
         }
 
         soundcorkDataService.storeOverrideUrls(environment.streamingUrl(), environment.updateUrl());
-        URI retryTarget = soundcorkDataService.buildUriFromBase(environment.streamingUrl(), outcome.target().getPath(), outcome.target().getQuery());
+        URI retryTarget = soundcorkDataService.buildUriFromBase(
+                environment.streamingUrl(),
+                outcome.target().getPath(),
+                outcome.target().getQuery());
         if (retryTarget == null) {
             LOGGER.debug("Cannot retry login after 4033 because retry target could not be built");
             return outcome;
         }
 
         LOGGER.info("Retrying login against switched environment {}", retryTarget);
-        return executeRequest(method, requestHeaders, retryTarget, requestBody);
+        return executeRequest(
+                method,
+                requestHeaders,
+                retryTarget,
+                requestBody,
+                captureContext,
+                "login_retry",
+                Map.of());
     }
 
     private SoundcorkCloudXml.EnvironmentInfo fetchEnvironment(
             Headers requestHeaders,
             URI loginTarget,
-            SoundcorkCloudXml.LoginCredentials credentials) throws IOException, InterruptedException {
+            SoundcorkCloudXml.LoginCredentials credentials,
+            HttpTrafficCaptureService.CaptureContext captureContext) throws IOException, InterruptedException {
         String encodedEmail = URLEncoder.encode(credentials.email(), StandardCharsets.UTF_8);
         String pathPrefix = margePathPrefix(loginTarget);
         URI environmentTarget = soundcorkDataService.buildUriFromBase(
@@ -328,9 +362,14 @@ final class HttpProxyService {
             return null;
         }
 
-        Headers environmentHeaders = cloneHeaders(requestHeaders);
-        environmentHeaders.set("Authorization", basicAuth(credentials));
-        RequestOutcome environmentOutcome = executeRequest("GET", environmentHeaders, environmentTarget, new byte[0]);
+        RequestOutcome environmentOutcome = executeRequest(
+                "GET",
+                requestHeaders,
+                environmentTarget,
+                new byte[0],
+                captureContext,
+                "environment_lookup",
+                Map.of("Authorization", List.of(basicAuth(credentials))));
         if (environmentOutcome.response().statusCode() != 200) {
             LOGGER.debug("Environment lookup for login returned HTTP {}", environmentOutcome.response().statusCode());
             return null;
@@ -350,14 +389,28 @@ final class HttpProxyService {
         return path.substring(0, streamingIndex);
     }
 
-    private RequestOutcome executeRequest(String method, Headers requestHeaders, URI target, byte[] requestBody)
-            throws IOException, InterruptedException {
+    private RequestOutcome executeRequest(
+            String method,
+            Headers requestHeaders,
+            URI target,
+            byte[] requestBody,
+            HttpTrafficCaptureService.CaptureContext captureContext,
+            String stepLabel,
+            Map<String, List<String>> explicitInjectedHeaders) throws IOException, InterruptedException {
+        long startNanos = System.nanoTime();
         URI effectiveTarget = soundcorkDataService.overrideTarget(target);
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(effectiveTarget)
                 .timeout(REQUEST_TIMEOUT)
                 .method(method, bodyPublisher(method, requestBody));
         HeaderCopy requestHeaderCopy = copyRequestHeaders(requestHeaders, requestBuilder);
-        Map<String, List<String>> backendInjectedHeaders = applyBackendHeaders(requestHeaders, effectiveTarget, requestBuilder);
+        Map<String, List<String>> backendInjectedHeaders = applyInjectedHeaders(
+                requestHeaders,
+                explicitInjectedHeaders,
+                effectiveTarget,
+                requestBuilder);
+        Map<String, List<String>> finalSentHeaders = mergeHeaders(
+                requestHeaderCopy.forwarded(),
+                backendInjectedHeaders);
 
         LOGGER.debug("Proxying {} request to {}", method, effectiveTarget);
         if (LOGGER.isTraceEnabled()) {
@@ -367,11 +420,27 @@ final class HttpProxyService {
                     effectiveTarget,
                     requestBody.length,
                     formatHeaders(requestHeaderCopy.forwarded()),
-                    formatHeaders(backendInjectedHeaders),
+                    formatHeaders(maskHeadersForTrace(backendInjectedHeaders)),
                     formatHeaders(requestHeaderCopy.blocked()));
         }
 
         HttpResponse<byte[]> response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        ResponseHeaderPlan responseHeaderPlan = planResponseHeaders(response.headers());
+        captureService.captureUpstreamExchange(
+                captureContext,
+                stepLabel,
+                target,
+                effectiveTarget,
+                requestBody,
+                requestHeaderCopy.forwarded(),
+                requestHeaderCopy.blocked(),
+                backendInjectedHeaders,
+                finalSentHeaders,
+                response,
+                responseHeaderPlan.forwarded(),
+                responseHeaderPlan.blocked(),
+                System.nanoTime() - startNanos);
+
         if (response.statusCode() >= 400 && response.statusCode() < 500) {
             String bodySnippet = response.body() != null
                     ? new String(response.body(), 0, Math.min(response.body().length, 2048), StandardCharsets.UTF_8)
@@ -381,7 +450,7 @@ final class HttpProxyService {
         } else if (response.statusCode() >= 500) {
             LOGGER.warn("Server returned HTTP {} for {} {}", response.statusCode(), method, effectiveTarget);
         }
-        return new RequestOutcome(effectiveTarget, response);
+        return new RequestOutcome(target, effectiveTarget, response);
     }
 
     private HeaderCopy copyRequestHeaders(Headers requestHeaders, HttpRequest.Builder requestBuilder) {
@@ -407,42 +476,63 @@ final class HttpProxyService {
         return new HeaderCopy(forwarded, blocked);
     }
 
-    private Map<String, List<String>> applyBackendHeaders(
+    private Map<String, List<String>> applyInjectedHeaders(
             Headers requestHeaders,
+            Map<String, List<String>> explicitInjectedHeaders,
             URI target,
             HttpRequest.Builder requestBuilder) {
         LinkedHashMap<String, List<String>> injected = new LinkedHashMap<>();
+        applyExplicitHeaders(requestHeaders, explicitInjectedHeaders, requestBuilder, injected);
+
         String host = target.getHost();
         String path = target.getPath();
-
         if (soundcorkDataService.isBmxTarget(host)) {
-            injectIfMissing(requestHeaders, requestBuilder, injected, "x-bmx-api-key", soundcorkDataService.bmxApiKey());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "x-software-version", soundcorkDataService.soundcorkAppVersion());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "x-bmx-api-key", soundcorkDataService.bmxApiKey());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "x-software-version", soundcorkDataService.soundcorkAppVersion());
         }
 
         if (soundcorkDataService.isMargeTarget(host, path)) {
             String mediaType = soundcorkDataService.mediaTypeForPath(path);
-            injectIfMissing(requestHeaders, requestBuilder, injected, "Accept", mediaType);
-            injectIfMissing(requestHeaders, requestBuilder, injected, "Content-Type", mediaType);
-            injectIfMissing(requestHeaders, requestBuilder, injected, "ClientType", soundcorkDataService.defaultClientType());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "GUID", soundcorkDataService.guid());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "version_NativeFrameVersion", soundcorkDataService.nativeFrameVersion());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "version_StockholmVersion", soundcorkDataService.soundcorkAppVersion());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "version_ProtocolVersion", soundcorkDataService.protocolVersion());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "Accept", mediaType);
+            injectIfMissing(requestHeaders, injected, requestBuilder, "Content-Type", mediaType);
+            injectIfMissing(requestHeaders, injected, requestBuilder, "ClientType", soundcorkDataService.defaultClientType());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "GUID", soundcorkDataService.guid());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "version_NativeFrameVersion", soundcorkDataService.nativeFrameVersion());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "version_StockholmVersion", soundcorkDataService.soundcorkAppVersion());
+            injectIfMissing(requestHeaders, injected, requestBuilder, "version_ProtocolVersion", soundcorkDataService.protocolVersion());
             if (soundcorkDataService.margeServerKeyHeader() != null) {
                 injectIfMissing(
                         requestHeaders,
-                        requestBuilder,
                         injected,
+                        requestBuilder,
                         soundcorkDataService.margeServerKeyHeader(),
                         soundcorkDataService.margeServerKey());
             }
             if (shouldInjectStoredAuth(path)) {
-                injectIfMissing(requestHeaders, requestBuilder, injected, "Authorization", soundcorkDataService.margeAuthToken());
+                injectIfMissing(requestHeaders, injected, requestBuilder, "Authorization", soundcorkDataService.margeAuthToken());
             }
         }
 
         return injected;
+    }
+
+    private void applyExplicitHeaders(
+            Headers requestHeaders,
+            Map<String, List<String>> explicitInjectedHeaders,
+            HttpRequest.Builder requestBuilder,
+            Map<String, List<String>> injected) {
+        if (explicitInjectedHeaders == null || explicitInjectedHeaders.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, List<String>> entry : explicitInjectedHeaders.entrySet()) {
+            String name = entry.getKey();
+            if (name == null) {
+                continue;
+            }
+            for (String value : sanitizeHeaderValues(entry.getValue())) {
+                injectIfMissing(requestHeaders, injected, requestBuilder, name, value);
+            }
+        }
     }
 
     private boolean shouldInjectStoredAuth(String path) {
@@ -461,15 +551,15 @@ final class HttpProxyService {
 
     private void injectIfMissing(
             Headers requestHeaders,
-            HttpRequest.Builder requestBuilder,
             Map<String, List<String>> injected,
+            HttpRequest.Builder requestBuilder,
             String headerName,
             String headerValue) {
-        if (headerValue == null || headerValue.isBlank() || hasHeader(requestHeaders, headerName)) {
+        if (headerValue == null || headerValue.isBlank() || hasHeader(requestHeaders, headerName) || hasHeader(injected, headerName)) {
             return;
         }
         requestBuilder.header(headerName, headerValue);
-        injected.put(headerName, List.of("<backend>"));
+        injected.put(headerName, List.of(headerValue));
     }
 
     private boolean hasHeader(Headers headers, String name) {
@@ -481,6 +571,49 @@ final class HttpProxyService {
             }
         }
         return false;
+    }
+
+    private boolean hasHeader(Map<String, List<String>> headers, String name) {
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if (entry.getKey() != null
+                    && entry.getKey().equalsIgnoreCase(name)
+                    && !sanitizeHeaderValues(entry.getValue()).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Map<String, List<String>> mergeHeaders(
+            Map<String, List<String>> forwardedHeaders,
+            Map<String, List<String>> injectedHeaders) {
+        LinkedHashMap<String, List<String>> merged = new LinkedHashMap<>();
+        putHeaders(merged, forwardedHeaders);
+        putHeaders(merged, injectedHeaders);
+        return merged;
+    }
+
+    private void putHeaders(Map<String, List<String>> target, Map<String, List<String>> source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, List<String>> entry : source.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            target.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+    }
+
+    private Map<String, List<String>> maskHeadersForTrace(Map<String, List<String>> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return Map.of();
+        }
+        LinkedHashMap<String, List<String>> masked = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            masked.put(entry.getKey(), List.of("<backend>"));
+        }
+        return masked;
     }
 
     private List<String> sanitizeHeaderValues(List<String> values) {
@@ -540,18 +673,11 @@ final class HttpProxyService {
         return "Basic " + java.util.Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 
-    private Headers cloneHeaders(Headers original) {
-        Headers copy = new Headers();
-        for (Map.Entry<String, List<String>> entry : original.entrySet()) {
-            copy.put(entry.getKey(), new ArrayList<>(entry.getValue()));
-        }
-        return copy;
-    }
-
     private void relayResponse(HttpExchange exchange, String method, HttpResponse<byte[]> response) throws IOException {
         byte[] body = response.body() == null ? new byte[0] : response.body();
         Headers responseHeaders = exchange.getResponseHeaders();
-        HeaderCopy responseHeaderCopy = copyResponseHeaders(response.headers(), responseHeaders);
+        ResponseHeaderPlan responseHeaderPlan = planResponseHeaders(response.headers());
+        applyResponseHeaders(responseHeaders, responseHeaderPlan.forwarded());
         responseHeaders.set("Cache-Control", "no-store");
         if (LOGGER.isTraceEnabled()) {
             LOGGER.trace(
@@ -562,9 +688,9 @@ final class HttpProxyService {
                     formatHeaders(response.headers().map()));
             LOGGER.trace(
                     "Proxy response forwarded to frontend: relayedHeaders={}, backendAddedHeaders={}, droppedHeaders={}",
-                    formatHeaders(responseHeaderCopy.forwarded()),
+                    formatHeaders(responseHeaderPlan.forwarded()),
                     formatHeaders(Map.of("Cache-Control", List.of("no-store"))),
-                    formatHeaders(responseHeaderCopy.blocked()));
+                    formatHeaders(responseHeaderPlan.blocked()));
         }
 
         boolean bodyAllowed = !"HEAD".equals(method)
@@ -580,15 +706,12 @@ final class HttpProxyService {
         }
     }
 
-    private HeaderCopy copyResponseHeaders(HttpHeaders httpHeaders, Headers responseHeaders) {
+    private ResponseHeaderPlan planResponseHeaders(HttpHeaders httpHeaders) {
         LinkedHashMap<String, List<String>> forwarded = new LinkedHashMap<>();
         LinkedHashMap<String, List<String>> blocked = new LinkedHashMap<>();
         for (Map.Entry<String, List<String>> entry : httpHeaders.map().entrySet()) {
             String name = entry.getKey();
             List<String> values = entry.getValue() == null ? List.of() : List.copyOf(entry.getValue());
-            // HTTP/2 pseudo-headers (e.g. :status, :method) must never be forwarded as
-            // real HTTP/1.1 headers — doing so produces a malformed response that causes
-            // reverse proxies (nginx, etc.) to return 502.
             if (name == null || name.startsWith(":") || BLOCKED_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
                 if (name != null) {
                     blocked.put(name, values);
@@ -596,9 +719,14 @@ final class HttpProxyService {
                 continue;
             }
             forwarded.put(name, values);
-            responseHeaders.put(name, values);
         }
-        return new HeaderCopy(forwarded, blocked);
+        return new ResponseHeaderPlan(forwarded, blocked);
+    }
+
+    private void applyResponseHeaders(Headers responseHeaders, Map<String, List<String>> forwardedHeaders) {
+        for (Map.Entry<String, List<String>> entry : forwardedHeaders.entrySet()) {
+            responseHeaders.put(entry.getKey(), entry.getValue());
+        }
     }
 
     private String queryParam(HttpExchange exchange, String name) {
@@ -639,6 +767,9 @@ final class HttpProxyService {
     private record HeaderCopy(Map<String, List<String>> forwarded, Map<String, List<String>> blocked) {
     }
 
-    private record RequestOutcome(URI target, HttpResponse<byte[]> response) {
+    private record ResponseHeaderPlan(Map<String, List<String>> forwarded, Map<String, List<String>> blocked) {
+    }
+
+    private record RequestOutcome(URI requestedTarget, URI target, HttpResponse<byte[]> response) {
     }
 }
