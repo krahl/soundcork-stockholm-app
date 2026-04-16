@@ -15,12 +15,14 @@ FROM eclipse-temurin:21-jre
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends jq && \
+    apt-get install -y --no-install-recommends jq unzip npm patch && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/build/install/app/ ./backend/
 COPY config/ ./backend/config/
 COPY update-urls.sh ./
+COPY stockholm-changes_v1.patch ./
+
 RUN mkdir -p ./backend/state
 
 EXPOSE 8088

@@ -1,0 +1,169 @@
+diff --git a/stockholm/index.html b/stockholm/index.html
+index c81e20d..440a2e9 100644
+--- a/stockholm/index.html
++++ b/stockholm/index.html
+@@ -44,6 +44,7 @@
+ 	</style>
+ 
+ 	<script type="text/javascript" src="js/jquery.min.js"></script>
++    <script type="text/javascript" src="js/browser_http_proxy.js"></script>
+     <script type="text/javascript" src="js/iscroll.js"></script>
+     <script type="text/javascript" src="js/libs/underscore.js"></script>
+     <script type="text/javascript" src="js/libs/backbone.js"></script>
+@@ -194,8 +195,20 @@
+     <script type="text/javascript" src="js/snapshot.js"></script>
+ 
+ 	<!-- qwebchannel -->
+-	<!-- Since the html runs inside the Qt WebEngine, load qwebchannel.js in the following way -->
+-	<script type="text/javascript" src="qrc:///qtwebchannel/qwebchannel.js"></script>
++	<!-- Load qwebchannel.js only inside the Qt WebEngine to avoid browser console noise. -->
++	<script type="text/javascript">
++        (function () {
++            var ua = navigator.userAgent.toLowerCase();
++            if (ua.indexOf("bose_computer_app") === -1 && ua.indexOf("soundtouch_computer_app") === -1) {
++                return;
++            }
++
++            var script = document.createElement("script");
++            script.type = "text/javascript";
++            script.src = "qrc:///qtwebchannel/qwebchannel.js";
++            document.head.appendChild(script);
++        })();
++    </script>
+ 
+     <!--  -->
+     <script type="text/javascript" src="js/app/app.js"></script>
+diff --git a/stockholm/js/browser_http_proxy.js b/stockholm/js/browser_http_proxy.js
+new file mode 100644
+index 0000000..b8e66ef
+--- /dev/null
++++ b/stockholm/js/browser_http_proxy.js
+@@ -0,0 +1,65 @@
++(function () {
++    if (typeof window === "undefined" || typeof window.jQuery === "undefined" || typeof window.URL === "undefined") {
++        return;
++    }
++
++    var PROXY_PATH = "/api/http-proxy";
++    var originalAjax = window.jQuery.ajax;
++
++    function resolveUrl(input) {
++        return new URL(input, window.location.href);
++    }
++
++    function shouldProxy(input) {
++        if (!input || typeof input !== "string") {
++            return false;
++        }
++
++        var target;
++        try {
++            target = resolveUrl(input);
++        } catch (error) {
++            return false;
++        }
++
++        if (target.protocol !== "http:" && target.protocol !== "https:") {
++            return false;
++        }
++
++        if (target.origin === window.location.origin) {
++            return false;
++        }
++
++        return true;
++    }
++
++    function proxiedUrl(input) {
++        var target = resolveUrl(input);
++        return PROXY_PATH + "?url=" + encodeURIComponent(target.href);
++    }
++
++    function rewriteAjaxArgs(url, options) {
++        if (typeof url === "string") {
++            var rewrittenUrl = shouldProxy(url) ? proxiedUrl(url) : url;
++            return options === undefined ? [rewrittenUrl] : [rewrittenUrl, options];
++        }
++
++        if (url && typeof url === "object" && typeof url.url === "string" && shouldProxy(url.url)) {
++            return [window.jQuery.extend({}, url, { url: proxiedUrl(url.url) }), options];
++        }
++
++        return [url, options];
++    }
++
++    window.jQuery.ajax = function (url, options) {
++        var rewrittenArgs = rewriteAjaxArgs(url, options);
++        return originalAjax.apply(this, rewrittenArgs);
++    };
++
++    window.StockholmBrowserHttpProxy = {
++        proxyUrl: function (input) {
++            return shouldProxy(input) ? proxiedUrl(input) : input;
++        },
++        shouldProxy: shouldProxy
++    };
++})();
+diff --git a/stockholm/js/main.js b/stockholm/js/main.js
+index e7feacf..d9ee9b0 100644
+--- a/stockholm/js/main.js
++++ b/stockholm/js/main.js
+@@ -37,6 +37,14 @@ function getURLParams(e, t) {
+   var i = r.match("[\\?&]" + e + "=([^?&#]*)");
+   return (i != null && i[1] != null && (n = decodeURI(i[1])), n);
+ }
++function getCookieValue(e) {
++  for (var t = e + "=", n = document.cookie ? document.cookie.split(";") : [], r = 0; r < n.length; r++) {
++    var i = n[r].trim();
++    if (i.indexOf(t) === 0)
++      return i.substring(t.length)
++  }
++  return null
++}
+ function getSettings() {
+   $.ajax({ dataType: "json", url: "json/config.json" })
+     .done(function (e) {
+@@ -754,7 +762,7 @@ $(window).load(function () {
+     (devicePixelRatio = window.devicePixelRatio),
+     (frame_version = getURLParams("native_version")),
+     (auth_server = getURLParams("authServer") || auth_server),
+-    (logging_level = getURLParams("loggingLevel") || logging_level),
++    (logging_level = getURLParams("loggingLevel") || getCookieValue("stockholmFrontendLoggingLevel") || logging_level),
+     logging_level > 0 && (showDebug = 2));
+   var t = getURLParams("disableUpdates") || disableUpdates;
+   (t > 0 && (disableUpdates = !0),
+diff --git a/stockholm/setup/index.html b/stockholm/setup/index.html
+index 0780287..37fe4c7 100644
+--- a/stockholm/setup/index.html
++++ b/stockholm/setup/index.html
+@@ -29,6 +29,7 @@
+ 	</style>
+ 
+ 	<script type="text/javascript" src="../js/jquery.min.js"></script>
++	<script type="text/javascript" src="../js/browser_http_proxy.js"></script>
+ 	<script type="text/javascript" src="../js/iscroll.js"></script>
+     <script type="text/javascript" src="../js/libs/underscore.js"></script>
+ 	<script type="text/javascript" src="js/StringController.js"></script>
+@@ -68,8 +69,20 @@
+ 	<script type="text/javascript" src="../js/privacy.js"></script>
+ 
+         <!-- qwebchannel -->
+-        <!-- Since the html runs inside the Qt WebEngine, load qwebchannel.js in the following way -->
+-        <script type="text/javascript" src="qrc:///qtwebchannel/qwebchannel.js"></script>
++        <!-- Load qwebchannel.js only inside the Qt WebEngine to avoid browser console noise. -->
++        <script type="text/javascript">
++            (function () {
++                var ua = navigator.userAgent.toLowerCase();
++                if (ua.indexOf("bose_computer_app") === -1 && ua.indexOf("soundtouch_computer_app") === -1) {
++                    return;
++                }
++
++                var script = document.createElement("script");
++                script.type = "text/javascript";
++                script.src = "qrc:///qtwebchannel/qwebchannel.js";
++                document.head.appendChild(script);
++            })();
++        </script>
+ 
+     <!-- data analysis-->
+     <script type="text/javascript" src="../js/data_analytics.js"></script>

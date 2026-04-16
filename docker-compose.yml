@@ -2,13 +2,16 @@ services:
   backend:
     build: .
     image: soundcork-stockholm-app
-    # host network mode so that speakers can be found
+    # host network mode so that speakers can be found - disable in Docker Desktop for Windows
     network_mode: host
     # If not in host mode
     #ports:
       #- 8088:8088
     volumes:
-      - /opt/stockholm-app/state:/app/backend/state
+      - ./state:/app/backend/state
+      # Speeds up startup if stockholm is mounted and unzip can be skipped
+      - ./stockholm:/app/stockholm
+      - ./stockholm.zip:/app/stockholm.zip
       # Optional: Mount custom logging config
       #- /opt/stockholm-app/config/logback.xml:/app/logback.xml
     environment:
@@ -18,5 +21,5 @@ services:
       - BACKEND_PORT=8088
       - BACKEND_URL=http://soundcork.local.example.com:8000
       # marge/ suffix is important if used against soundcork
-      - AUTH_SUFFIX=http://soundcork.local.example.com:8000/marge/
+      - AUTH_SERVICE_URL=http://soundcork.local.example.com:8000/marge/
     restart: unless-stopped
