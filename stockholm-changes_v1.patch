@@ -1,5 +1,5 @@
 diff --git a/stockholm/index.html b/stockholm/index.html
-index c81e20d..440a2e9 100644
+index 4631268..440a2e9 100644
 --- a/stockholm/index.html
 +++ b/stockholm/index.html
 @@ -44,6 +44,7 @@
@@ -10,7 +10,15 @@ index c81e20d..440a2e9 100644
      <script type="text/javascript" src="js/iscroll.js"></script>
      <script type="text/javascript" src="js/libs/underscore.js"></script>
      <script type="text/javascript" src="js/libs/backbone.js"></script>
-@@ -194,8 +195,20 @@
+@@ -67,6 +68,7 @@
+     <script type="text/javascript" src="js/bcm_comm.js"></script>
+ 	<script type="text/javascript" src="js/update.js"></script>
+ 	<script type="text/javascript" src="js/websocket_polyfill.js"></script>
++	<script type="text/javascript" src="js/browser_native_bridge.js"></script>
+ 	<script type="text/javascript" src="js/app_comm.js"></script>
+ 	<script type="text/javascript" src="js/discovery_controller.js"></script>
+ 	<script type="text/javascript" src="js/login.js"></script>
+@@ -193,8 +195,20 @@
      <script type="text/javascript" src="js/snapshot.js"></script>
  
  	<!-- qwebchannel -->
@@ -33,6 +41,619 @@ index c81e20d..440a2e9 100644
  
      <!--  -->
      <script type="text/javascript" src="js/app/app.js"></script>
+diff --git a/stockholm/js/app_comm.js b/stockholm/js/app_comm.js
+index 71b2dcc..9b6ab52 100644
+--- a/stockholm/js/app_comm.js
++++ b/stockholm/js/app_comm.js
+@@ -1,338 +1,299 @@
+ function AppComm() {
+-  function n() {
+-    (r(), i());
+-  }
+-  function r() {}
+-  function i() {
+-    isAndroid &&
+-      $(window).on("online offline", function (e) {
+-        f();
+-      });
+-  }
+-  function s(e, n) {
+-    (!isIOS && showDebug == 2 && console.log("appSend: " + JSON.stringify(e)),
+-      e &&
+-        e.method === "getDeviceList" &&
+-        showDebug >= 2 &&
+-        console.log(
+-          LogMessage.create(
+-            "DEVICE_DISCOVERY",
+-            "STEP 3: REQUEST SSDP DEVICES - START",
+-            !0,
+-          ),
+-          e,
+-        ),
+-      setTimeout(function () {
+-        (u(e, n), (e.id = t), a(e), ++t);
+-      }, 0));
+-  }
+-  function o(t) {
+-    (!isIOS &&
+-      showDebug == 2 &&
+-      console.log("appReceive: " + JSON.stringify(t)),
+-      setTimeout(function () {
+-        !isIOS &&
+-          showDebug == 2 &&
+-          (isQT
+-            ? console.log("STOCKHOLM <- NATIVE - Payload: " + JSON.stringify(t))
+-            : console.log("STOCKHOLM <- NATIVE", t));
+-        try {
+-          if (t.method != undefined && t.method != null) {
+-            var n = t.method,
+-              r = t.params,
+-              i = t.id;
+-            switch (n) {
+-              case "devices":
+-                (showDebug >= 2 &&
+-                  console.log(
+-                    LogMessage.create(
+-                      "DEVICE_DISCOVERY",
+-                      "STEP 3: REQUEST SSDP DEVICES - END - SUCCESS!",
+-                      !0,
+-                    ),
+-                    t,
+-                  ),
+-                  funcObj.discovery.addSSDPDevices(r));
++    function init() {
++        bindPolling();
++    }
++
++    function bindPolling() {
++        if (typeof Native === "undefined") {
++            return;
++        }
++        if (isAndroid) {
++            $(window).on("online offline", function () {
++                runQueue();
++            });
++        }
++        if (isBrowser) {
++            bridgePollHandle = setInterval(function () {
++                runQueue();
++            }, window.STOCKHOLM_NATIVE_POLL_INTERVAL || 1000);
++        }
++    }
++
++    function appSend(payload, callback) {
++        if (!isIOS && showDebug == 2) {
++            console.log("appSend: " + JSON.stringify(payload));
++        }
++        if (payload && payload.method === "getDeviceList" && showDebug >= 2) {
++            console.log(LogMessage.create("DEVICE_DISCOVERY", "STEP 3: REQUEST SSDP DEVICES - START", !0), payload);
++        }
++        setTimeout(function () {
++            registerCallback(payload, callback);
++            payload.id = nextId;
++            sendToNative(payload);
++            ++nextId;
++        }, 0);
++    }
++
++    function appReceive(message) {
++        if (!isIOS && showDebug == 2) {
++            console.log("appReceive: " + JSON.stringify(message));
++        }
++        setTimeout(function () {
++            if (!isIOS && showDebug == 2) {
++                if (isQT) {
++                    console.log("STOCKHOLM <- NATIVE - Payload: " + JSON.stringify(message));
++                } else {
++                    console.log("STOCKHOLM <- NATIVE", message);
++                }
++            }
++            try {
++                if (message.method !== undefined && message.method !== null) {
++                    handleMethodMessage(message);
++                } else {
++                    if (!callbacks[message.id]) {
++                        console.log("appReceive FAILED (callback index " + message.id + " not found)");
++                        return;
++                    }
++                    var registered = callbacks[message.id];
++                    registered.callback.call(null, message.result);
++                    callbacks[message.id] = null;
++                    delete callbacks[message.id];
++                }
++            } catch (error) {}
++        }, 0);
++    }
++
++    function handleMethodMessage(message) {
++        var method = message.method;
++        var params = message.params;
++        var id = message.id;
++        switch (method) {
++            case "devices":
++                showDebug >= 2 && console.log(LogMessage.create("DEVICE_DISCOVERY", "STEP 3: REQUEST SSDP DEVICES - END - SUCCESS!", !0), message);
++                funcObj.discovery.addSSDPDevices(params);
+                 break;
+-              case "servers":
+-                funcObj.wrkr_tools.setMusicOnDeviceServers(r);
++            case "servers":
++                funcObj.wrkr_tools.setMusicOnDeviceServers(params);
+                 break;
+-              case "createLocalMusicAccount":
+-                r === null
+-                  ? (funcObj.message.closeMessage(),
++            case "createLocalMusicAccount":
++                if (params === null) {
++                    funcObj.message.closeMessage();
+                     funcObj.message.createMessage({
+-                      title:
+-                        "##TRANS_InternalMessages_Dialogs_LocalMusicAddWarning_Title##",
+-                      copy:
+-                        "##TRANS_InternalMessages_Dialogs_LocalMusicAddWarning_Copy##<br /><br /><span class='dev_msg'>" +
+-                        funcObj.errorDefines.getErrorCode(
+-                          "LOCAL_MUSIC_UNABLE_ADD_WARNING",
+-                        ) +
+-                        "</span>",
+-                      buttons: [
+-                        { title: "##TRANS_Buttons_OK##", callback: "close" },
+-                      ],
+-                    }))
+-                  : funcObj.wrkr_tools.createAccount(
+-                      "local_music",
+-                      r.rms_uuid,
+-                      r.src_uuid,
+-                      r.name,
+-                    );
+-                break;
+-              case "socketReceive":
+-                var o = r.uID,
+-                  u = new Object();
+-                u.data = r.xml;
+-                var a = funcObj.devCon.getDeviceSocketObj(o);
+-                a !== undefined && a.socketMsg(u);
+-                break;
+-              case "socketOpen":
+-                var o = r.uID,
+-                  a = funcObj.devCon.getDeviceSocketObj(o);
+-                a !== undefined && a.socketOpen();
+-                break;
+-              case "socketClose":
+-                var o = r.uID,
+-                  a = funcObj.devCon.getDeviceSocketObj(o);
+-                a !== undefined && a.socketClosed();
++                        title: "##TRANS_InternalMessages_Dialogs_LocalMusicAddWarning_Title##",
++                        copy: "##TRANS_InternalMessages_Dialogs_LocalMusicAddWarning_Copy##<br /><br /><span class='dev_msg'>" + funcObj.errorDefines.getErrorCode("LOCAL_MUSIC_UNABLE_ADD_WARNING") + "</span>",
++                        buttons: [{ title: "##TRANS_Buttons_OK##", callback: "close" }]
++                    });
++                } else {
++                    funcObj.wrkr_tools.createAccount("local_music", params.rms_uuid, params.src_uuid, params.name);
++                }
+                 break;
+-              case "socketError":
+-                var o = r.uID,
+-                  u = r.msg,
+-                  a = funcObj.devCon.getDeviceSocketObj(o);
+-                a !== undefined && a.socketError();
++            case "socketReceive":
++                var socketReceiveUID = params.uID;
++                var socketMessage = new Object();
++                socketMessage.data = params.xml;
++                var socketObject = funcObj.devCon.getDeviceSocketObj(socketReceiveUID);
++                socketObject !== undefined && socketObject.socketMsg(socketMessage);
+                 break;
+-              case "log":
+-                var u = r.msg;
+-                console.log(u);
++            case "socketOpen":
++                var socketOpenUID = params.uID;
++                var openSocketObject = funcObj.devCon.getDeviceSocketObj(socketOpenUID);
++                openSocketObject !== undefined && openSocketObject.socketOpen();
+                 break;
+-              case "setDebugLevel":
+-                isIOS &&
+-                  ((showDebug = parseInt(r.level)),
+-                  showDebug === 2 &&
+-                    (function () {
+-                      ((console = new Object()),
+-                        (console.log = function () {
+-                          var e = "Stockholm: ";
+-                          for (var t = 0; t < arguments.length; t++)
+-                            e = e + arguments[t] + ", ";
+-                          s({ method: "log", params: { msg: e }, id: null });
+-                        }),
+-                        (console.debug = console.log),
+-                        (console.info = console.log),
+-                        (console.warn = console.log),
+-                        (console.error = console.log));
+-                    })());
++            case "socketClose":
++                var socketCloseUID = params.uID;
++                var closeSocketObject = funcObj.devCon.getDeviceSocketObj(socketCloseUID);
++                closeSocketObject !== undefined && closeSocketObject.socketClosed();
+                 break;
+-              case "guiDownloadComplete":
+-                var f = r.id;
+-                srcObj.settings.getZipLoading()
+-                  ? (srcObj.settings.setZipLoading(!1),
+-                    funcObj.UIUpdate.installGUI(f))
+-                  : funcObj.UIUpdate.promptInstall(f);
++            case "socketError":
++                var socketErrorUID = params.uID;
++                var errorSocketObject = funcObj.devCon.getDeviceSocketObj(socketErrorUID);
++                errorSocketObject !== undefined && errorSocketObject.socketError();
+                 break;
+-              case "appDownloadComplete":
+-                var l = r.fileName;
+-                (showDebug == 2 && console.log("appfile to be installed: " + l),
+-                  l != null &&
+-                    setTimeout(function () {
+-                      (funcObj.message.closeMessage("NativeUpdate"),
+-                        funcObj.appcomm.appSend({
+-                          method: "installNewApp",
+-                          params: { fileName: l },
+-                          id: null,
+-                        }));
+-                    }, 1500));
++            case "log":
++                console.log(params.msg);
+                 break;
+-              case "appDownloadProgress":
+-                funcObj.message.getCurRef() !== "NativeUpdate" &&
+-                  funcObj.message.createMessage({
+-                    title:
+-                      "##TRANS_InternalMessages_Dialogs_NativeUpdate_Title##",
+-                    copy: "##TRANS_InternalMessages_Dialogs_NativeUpdate_Copy##",
+-                    modal: !0,
+-                    close: !1,
+-                    clear:
+-                      funcObj.message.getCurRef() != "privacypolicy" ? !0 : !1,
+-                    icon: "&#xE168;",
+-                    ref: "NativeUpdate",
+-                    progressBarHolder: !0,
+-                    background: !0,
+-                    buttons: [],
+-                  });
+-                var c = r.percentComplete;
+-                (showDebug == 2 && console.log("homer_download_percent: " + c),
+-                  c != null && funcObj.play.writeAppUpdateMsg(c));
++            case "setDebugLevel":
++                if (isIOS) {
++                    showDebug = parseInt(params.level);
++                    if (showDebug === 2) {
++                        console = new Object();
++                        console.log = function () {
++                            var logMessage = "Stockholm: ";
++                            for (var index = 0; index < arguments.length; index++) {
++                                logMessage = logMessage + arguments[index] + ", ";
++                            }
++                            appSend({ method: "log", params: { msg: logMessage }, id: null });
++                        };
++                        console.debug = console.log;
++                        console.info = console.log;
++                        console.warn = console.log;
++                        console.error = console.log;
++                    }
++                }
+                 break;
+-              case "appSleep":
+-                if (isIOS || isAndroid)
+-                  (funcObj.UIMain.setAppState("asleep"),
+-                    funcObj.devCon.disconnectAll(!0),
+-                    srcObj.feedback && srcObj.feedback.deactivate());
++            case "guiDownloadComplete":
++                var guiId = params.id;
++                if (srcObj.settings.getZipLoading()) {
++                    srcObj.settings.setZipLoading(!1);
++                    funcObj.UIUpdate.installGUI(guiId);
++                } else {
++                    funcObj.UIUpdate.promptInstall(guiId);
++                }
+                 break;
+-              case "appWake":
+-                if (isIOS || isAndroid)
+-                  (funcObj.UIMain.setAppState("awake"),
+-                    funcObj.discovery.startWakeDevices(),
+-                    funcObj.discovery.updateLanStatus(!0),
+-                    funcObj.sources.requestMargeSources(function (e, t) {
+-                      funcObj.sources.handleSourcesFromMarge(
+-                        e,
+-                        t,
+-                        { type: "update" },
+-                        !0,
+-                      );
+-                    }),
+-                    funcObj.presets.requestPresetsFromMarge(),
+-                    srcObj.feedback && srcObj.feedback.activate());
+-                var h = curLang;
+-                (parseLanguage(!0),
+-                  setTimeout(function () {
+-                    h != curLang &&
+-                      s({
+-                        method: "reloadWebview",
+-                        params: { url: "index.html" },
+-                        id: null,
+-                      });
+-                  }, 0));
++            case "appDownloadComplete":
++                var fileName = params.fileName;
++                showDebug == 2 && console.log("appfile to be installed: " + fileName);
++                fileName != null && setTimeout(function () {
++                    funcObj.message.closeMessage("NativeUpdate");
++                    funcObj.appcomm.appSend({ method: "installNewApp", params: { fileName: fileName }, id: null });
++                }, 1500);
+                 break;
+-              case "usbDevices":
+-                r.length > 0
+-                  ? funcObj.devCon.promptWifiSetup()
+-                  : r.length == 0 &&
+-                    funcObj.message.closeMessage("usbDeviceDiscovered");
++            case "appDownloadProgress":
++                if (funcObj.message.getCurRef() !== "NativeUpdate") {
++                    funcObj.message.createMessage({
++                        title: "##TRANS_InternalMessages_Dialogs_NativeUpdate_Title##",
++                        copy: "##TRANS_InternalMessages_Dialogs_NativeUpdate_Copy##",
++                        modal: !0,
++                        close: !1,
++                        clear: funcObj.message.getCurRef() != "privacypolicy" ? !0 : !1,
++                        icon: "&#xE168;",
++                        ref: "NativeUpdate",
++                        progressBarHolder: !0,
++                        background: !0,
++                        buttons: []
++                    });
++                }
++                var percentComplete = params.percentComplete;
++                showDebug == 2 && console.log("homer_download_percent: " + percentComplete);
++                percentComplete != null && funcObj.play.writeAppUpdateMsg(percentComplete);
+                 break;
+-              case "error":
+-                srcObj.settings.getZipLoading() &&
+-                  (funcObj.message.closeMessage("submitting"),
+-                  srcObj.settings.setZipLoading(!1));
+-                var i = r.id,
+-                  p = r.sid,
+-                  d =
+-                    '<errors><error value="' +
+-                    i +
+-                    '" name="' +
+-                    p +
+-                    '"></error></errors>';
+-                funcObj.message.parseError(funcObj.UIMain.getUID(), $(d), {
+-                  appcomm: !0,
+-                });
++            case "appSleep":
++                if (isIOS || isAndroid) {
++                    funcObj.UIMain.setAppState("asleep");
++                    funcObj.devCon.disconnectAll(!0);
++                    srcObj.feedback && srcObj.feedback.deactivate();
++                }
+                 break;
+-              case "message":
+-                var i = r.id,
+-                  p = r.sid,
+-                  d =
+-                    '<messages><message value="' +
+-                    i +
+-                    '" name="' +
+-                    p +
+-                    '"></message></messages>';
+-                funcObj.message.parseMessage(funcObj.UIMain.getUID(), d, {
+-                  appcomm: !0,
+-                });
++            case "appWake":
++                if (isIOS || isAndroid) {
++                    funcObj.UIMain.setAppState("awake");
++                    funcObj.discovery.startWakeDevices();
++                    funcObj.discovery.updateLanStatus(!0);
++                    funcObj.sources.requestMargeSources(function (response, xhr) {
++                        funcObj.sources.handleSourcesFromMarge(response, xhr, { type: "update" }, !0);
++                    });
++                    funcObj.presets.requestPresetsFromMarge();
++                    srcObj.feedback && srcObj.feedback.activate();
++                }
++                var previousLang = curLang;
++                parseLanguage(!0);
++                setTimeout(function () {
++                    previousLang != curLang && appSend({ method: "reloadWebview", params: { url: "index.html" }, id: null });
++                }, 0);
+                 break;
+-              case "networkChange":
+-                (funcObj.devCon.areDevicesWaking() ||
+-                  funcObj.devCon.disconnectAll(),
+-                  funcObj.discovery.updateLanStatus());
++            case "usbDevices":
++                params.length > 0 ? funcObj.devCon.promptWifiSetup() : params.length == 0 && funcObj.message.closeMessage("usbDeviceDiscovered");
+                 break;
+-              case "removeStoredMusicLibrary":
+-                funcObj.wrkr_tools.removeAccount("stored_music", r.hmsID);
++            case "error":
++                srcObj.settings.getZipLoading() && (funcObj.message.closeMessage("submitting"), srcObj.settings.setZipLoading(!1));
++                var errorXml = '<errors><error value="' + params.id + '" name="' + params.sid + '"></error></errors>';
++                funcObj.message.parseError(funcObj.UIMain.getUID(), $(errorXml), { appcomm: !0 });
+                 break;
+-              case "usbConnection":
+-                var v = r.status;
++            case "message":
++                var messageXml = '<messages><message value="' + params.id + '" name="' + params.sid + '"></message></messages>';
++                funcObj.message.parseMessage(funcObj.UIMain.getUID(), messageXml, { appcomm: !0 });
+                 break;
+-              case "wifiSignalStrength":
+-                var m = r.strength;
++            case "networkChange":
++                funcObj.devCon.areDevicesWaking() || funcObj.devCon.disconnectAll();
++                funcObj.discovery.updateLanStatus();
+                 break;
+-              case "getHMSStatus":
+-                var v = r.status;
++            case "removeStoredMusicLibrary":
++                funcObj.wrkr_tools.removeAccount("stored_music", params.hmsID);
+                 break;
+-              case "buttonPress":
+-                switch (r.button) {
+-                  case "back":
+-                    r.event == "buttonUp" && funcObj.content.extBack();
+-                    break;
+-                  case "volumeUp":
+-                  case "volumeDown":
+-                    funcObj.volumeCon.volumeButtonEvent(r.button, r.event);
++            case "buttonPress":
++                switch (params.button) {
++                    case "back":
++                        params.event == "buttonUp" && funcObj.content.extBack();
++                        break;
++                    case "volumeUp":
++                    case "volumeDown":
++                        funcObj.volumeCon.volumeButtonEvent(params.button, params.event);
++                        break;
+                 }
+                 break;
+-              case "inboundURI":
+-                var g = r.uri;
+-                funcObj.UIMain.handleInboundURI(g);
++            case "inboundURI":
++                funcObj.UIMain.handleInboundURI(params.uri);
+                 break;
+-              case "keyboardEvent":
+-                app.Models.MainLayoutModel.trigger("KEYBOARD_EVENT", {
+-                  keyboard: r,
+-                });
++            case "keyboardEvent":
++                app.Models.MainLayoutModel.trigger("KEYBOARD_EVENT", { keyboard: params });
++                break;
++            default:
+                 break;
+-              default:
++        }
++    }
++
++    function registerCallback(payload, callback) {
++        if (typeof callback == "function") {
++            callbacks[nextId] = {};
++            callbacks[nextId].payload = payload;
++            callbacks[nextId].callback = callback;
++        }
++    }
++
++    function sendToNative(payload) {
++        if (!isIOS && showDebug == 2) {
++            if (isQT) {
++                console.log("STOCKHOLM -> NATIVE - Payload: " + JSON.stringify(payload));
++            } else {
++                console.log("%cSTOCKHOLM -> NATIVE", "color: #B24BE6", payload);
++            }
++        }
++        if (isBrowser && typeof Native == "undefined") {
++            return;
++        }
++        if (isQT) {
++            showDebug == 2 && console.log("Using qtNativeObj to send AppComm\n");
++            qtNativeObj.appSend(JSON.stringify(payload));
++        } else if (isIOS) {
++            if (wkWebView) {
++                window.webkit.messageHandlers.jsHandler.postMessage(encodeURIComponent(JSON.stringify(payload)));
++            } else {
++                var iframe = document.createElement("IFRAME");
++                iframe.setAttribute("src", "appSend:" + encodeURIComponent(JSON.stringify(payload)));
++                document.documentElement.appendChild(iframe);
++                iframe.parentNode.removeChild(iframe);
++                iframe = null;
+             }
+-          } else {
+-            if (!e[t.id]) {
+-              console.log(
+-                "appReceive FAILED (callback index " + t.id + " not found)",
+-              );
+-              return;
++        } else if (typeof Native != "undefined") {
++            Native.appSend(JSON.stringify(payload));
++        }
++    }
++
++    function runQueue() {
++        if (typeof Native != "undefined") {
++            var queue = Native.runQueue();
++            if (queue != null) {
++                var parsed = JSON.parse(queue);
++                parsed.messages != null && $.each(parsed.messages, function (index, message) {
++                    appReceive(message);
++                });
+             }
+-            var y = e[t.id];
+-            (y.callback.call(null, t.result), (e[t.id] = null), delete e[t.id]);
+-          }
+-        } catch (b) {}
+-      }, 0));
+-  }
+-  function u(n, r) {
+-    typeof r == "function" &&
+-      ((e[t] = {}), (e[t].payload = n), (e[t].callback = r));
+-  }
+-  function a(e) {
+-    !isIOS &&
+-      showDebug == 2 &&
+-      (isQT
+-        ? console.log("STOCKHOLM -> NATIVE - Payload: " + JSON.stringify(e))
+-        : console.log("%cSTOCKHOLM -> NATIVE", "color: #B24BE6", e));
+-    if (isBrowser) return;
+-    if (isQT)
+-      (showDebug == 2 && console.log("Using qtNativeObj to send AppComm\n"),
+-        qtNativeObj.appSend(JSON.stringify(e)));
+-    else if (isIOS)
+-      if (wkWebView)
+-        window.webkit.messageHandlers.jsHandler.postMessage(
+-          encodeURIComponent(JSON.stringify(e)),
+-        );
+-      else {
+-        var t = document.createElement("IFRAME");
+-        (t.setAttribute(
+-          "src",
+-          "appSend:" + encodeURIComponent(JSON.stringify(e)),
+-        ),
+-          document.documentElement.appendChild(t),
+-          t.parentNode.removeChild(t),
+-          (t = null));
+-      }
+-    else isAndroid && Native.appSend(JSON.stringify(e));
+-  }
+-  function f() {
+-    if (typeof Native != "undefined") {
+-      var e = Native.runQueue();
+-      if (e != null) {
+-        var t = JSON.parse(e);
+-        t.messages != null &&
+-          $.each(t.messages, function (e, t) {
+-            o(t);
+-          });
+-      }
++        }
++    }
++
++    function logToWindow(message) {
++        var logWindow = $("#log_window");
++        logWindow.append(message + "<br>");
+     }
+-  }
+-  function l(e) {
+-    var t = $("#log_window");
+-    t.append(e + "<br>");
+-  }
+-  var e = {},
+-    t = 0;
+-  ((this.appSend = s), (this.appReceive = o), n());
++
++    var callbacks = {};
++    var nextId = 0;
++    var bridgePollHandle = null;
++
++    this.appSend = appSend;
++    this.appReceive = appReceive;
++    init();
+ }
+-((AppComm.Constants = { SAFARI: "safari", INTERNET_EXPLORER: "iexplore" }),
+-  Object.freeze(AppComm.Constants));
++
++AppComm.Constants = { SAFARI: "safari", INTERNET_EXPLORER: "iexplore" };
++Object.freeze(AppComm.Constants);
 diff --git a/stockholm/js/browser_http_proxy.js b/stockholm/js/browser_http_proxy.js
 new file mode 100644
 index 0000000..b8e66ef
@@ -104,6 +725,82 @@ index 0000000..b8e66ef
 +        shouldProxy: shouldProxy
 +    };
 +})();
+diff --git a/stockholm/js/browser_native_bridge.js b/stockholm/js/browser_native_bridge.js
+new file mode 100644
+index 0000000..9e1d505
+--- /dev/null
++++ b/stockholm/js/browser_native_bridge.js
+@@ -0,0 +1,70 @@
++(function () {
++    if (typeof window === "undefined" || typeof window.Native !== "undefined") {
++        return;
++    }
++
++    var clientIdKey = "stockholmBridgeClientId";
++    var clientId = window.localStorage.getItem(clientIdKey);
++    if (!clientId) {
++        clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++        window.localStorage.setItem(clientIdKey, clientId);
++    }
++
++    function appSend(jsonString) {
++        var payload = JSON.parse(jsonString);
++        switch (payload.method) {
++            case "reloadWebview":
++                if (payload.params && payload.params.url) {
++                    window.location.href = payload.params.url;
++                }
++                return;
++            case "openUrl":
++                if (payload.params && payload.params.url) {
++                    window.open(payload.params.url, "_blank", "noopener");
++                }
++                return;
++            case "openApp":
++                if (payload.params && payload.params.appUri) {
++                    window.open(payload.params.appUri, "_blank", "noopener");
++                    return;
++                }
++                if (payload.params && payload.params.fallbackURL) {
++                    window.open(payload.params.fallbackURL, "_blank", "noopener");
++                }
++                return;
++            case "log":
++                if (payload.params && payload.params.msg) {
++                    console.log(payload.params.msg);
++                }
++                return;
++            default:
++                break;
++        }
++
++        var xhr = new XMLHttpRequest();
++        xhr.open("POST", "/api/native/appSend", true);
++        xhr.setRequestHeader("Content-Type", "application/json");
++        xhr.setRequestHeader("X-Stockholm-Client-Id", clientId);
++        xhr.send(JSON.stringify(payload));
++    }
++
++    function runQueue() {
++        var xhr = new XMLHttpRequest();
++        xhr.open("GET", "/api/native/runQueue?clientId=" + encodeURIComponent(clientId), false);
++        xhr.setRequestHeader("X-Stockholm-Client-Id", clientId);
++        try {
++            xhr.send(null);
++        } catch (error) {
++            return JSON.stringify({ messages: null });
++        }
++        return xhr.status >= 200 && xhr.status < 300 ? xhr.responseText : JSON.stringify({ messages: null });
++    }
++
++    window.Native = {
++        appSend: appSend,
++        runQueue: runQueue,
++        unblock: function () {}
++    };
++
++    window.STOCKHOLM_NATIVE_POLL_INTERVAL = 1000;
++})();
 diff --git a/stockholm/js/main.js b/stockholm/js/main.js
 index e7feacf..d9ee9b0 100644
 --- a/stockholm/js/main.js
@@ -133,10 +830,10 @@ index e7feacf..d9ee9b0 100644
    var t = getURLParams("disableUpdates") || disableUpdates;
    (t > 0 && (disableUpdates = !0),
 diff --git a/stockholm/setup/index.html b/stockholm/setup/index.html
-index 0780287..37fe4c7 100644
+index 1e711cc..37fe4c7 100644
 --- a/stockholm/setup/index.html
 +++ b/stockholm/setup/index.html
-@@ -29,6 +29,7 @@
+@@ -29,12 +29,14 @@
  	</style>
  
  	<script type="text/javascript" src="../js/jquery.min.js"></script>
@@ -144,7 +841,14 @@ index 0780287..37fe4c7 100644
  	<script type="text/javascript" src="../js/iscroll.js"></script>
      <script type="text/javascript" src="../js/libs/underscore.js"></script>
  	<script type="text/javascript" src="js/StringController.js"></script>
-@@ -68,8 +69,20 @@
+ 	<script type="text/javascript" src="js/SetupWizard.js"></script>
+ 	<script type="text/javascript" src="js/HoldButton.js"></script>
+ 	<script type="text/javascript" src="js/ReplaceComboBox.js"></script>
++	<script type="text/javascript" src="../js/browser_native_bridge.js"></script>
+ 	<script type="text/javascript" src="js/app_comm.js"></script>
+ 	<script type="text/javascript" src="js/device_controller.js"></script>
+ 	<script type="text/javascript" src="js/socket_comm.js"></script>
+@@ -67,8 +69,20 @@
  	<script type="text/javascript" src="../js/privacy.js"></script>
  
          <!-- qwebchannel -->
@@ -167,3 +871,283 @@ index 0780287..37fe4c7 100644
  
      <!-- data analysis-->
      <script type="text/javascript" src="../js/data_analytics.js"></script>
+diff --git a/stockholm/setup/js/app_comm.js b/stockholm/setup/js/app_comm.js
+index ade054b..a58b976 100644
+--- a/stockholm/setup/js/app_comm.js
++++ b/stockholm/setup/js/app_comm.js
+@@ -1,146 +1,134 @@
+ function AppComm() {
+-  function r() {
+-    (i(), s());
+-  }
+-  function i() {}
+-  function s() {
+-    isAndroid &&
+-      $(window).on("online offline", function (e) {
+-        l();
+-      });
+-  }
+-  function o(e, n) {
+-    setTimeout(function () {
+-      (a(e, n),
+-        (e.id = t),
+-        ++t,
+-        showDebug == 2 && console.log("appSend: " + JSON.stringify(e)));
+-      if (isBrowser && e.method != "getNetStats") {
+-        typeof n == "function" && n();
+-        return;
+-      }
+-      f(e);
+-    }, 0);
+-  }
+-  function u(t) {
+-    (console.log("appRec payload: "), console.log(t));
+-    if (t.params != undefined)
+-      if (t.method == "devices" && t.params.length > 0) {
+-        var n = "[";
+-        for (var r = 0; r < t.params.length; r++)
+-          (r > 0 && (n += ", "),
+-            (n += "(" + t.params[r].uID + ", " + t.params[r].ip + ")"));
+-        ((n += "]"),
+-          showDebug == 2 &&
+-            console.log(
+-              "appReceive: " +
+-                t.id +
+-                "(id) / " +
+-                t.method +
+-                " / " +
+-                n +
+-                "(devices) / " +
+-                t.result +
+-                "(result)",
+-            ));
+-      } else
+-        showDebug == 2 &&
+-          console.log(
+-            "appReceive: " +
+-              t.id +
+-              "(id) / " +
+-              t.method +
+-              " / " +
+-              t.params.length +
+-              "(params length) / " +
+-              t.result +
+-              "(result)",
+-          );
+-    else
+-      showDebug == 2 &&
+-        console.log(
+-          "appReceive: " +
+-            t.id +
+-            "(id) / " +
+-            t.method +
+-            " / " +
+-            t.result +
+-            "(result)",
+-        );
+-    setTimeout(function () {
+-      try {
+-        if (t.method)
+-          (c("appReceive (method:" + t.method + ")"),
+-            t.error != null && t.error != ""
+-              ? funcObj.setupWizard.appcomm_error(t)
+-              : funcObj.setupWizard.appcomm_receive(t));
+-        else {
+-          t.error != null &&
+-            t.error != "" &&
+-            funcObj.setupWizard.appcomm_error(t);
+-          if (!e[t.id]) {
+-            c("appReceive FAILED (callback index not found)");
++    function init() {
++        bindPolling();
++    }
++
++    function bindPolling() {
++        if (typeof Native == "undefined") {
+             return;
+-          }
+-          var n = t.id,
+-            r = t.result;
+-          c("appReceive (result:" + t.result + ")");
+-          var i = e[t.id];
+-          (i.callback.call(null, t.result), delete e[t.id]);
+         }
+-      } catch (s) {
+-        c("appReceive MESSAGE ERROR: " + s);
+-      }
+-    }, 0);
+-  }
+-  function a(n, r) {
+-    typeof r == "function" &&
+-      ((e[t] = {}), (e[t].payload = n), (e[t].callback = r));
+-  }
+-  function f(e) {
+-    showDebug == 2 &&
+-      (isQT
+-        ? console.log("STOCKHOLM -> NATIVE - Payload: " + JSON.stringify(e))
+-        : console.log("STOCKHOLM -> NATIVE", e));
+-    if (isBrowser) return;
+-    if (isQT)
+-      (showDebug == 2 &&
+-        console.log("Setup: Using qtSetupNativeObj to send AppComm\n"),
+-        qtSetupNativeObj.appSend(JSON.stringify(e)));
+-    else if (isIOS)
+-      if (wkWebView)
+-        window.webkit.messageHandlers.jsHandler.postMessage(
+-          encodeURIComponent(JSON.stringify(e)),
+-        );
+-      else {
+-        var t = document.createElement("IFRAME");
+-        (t.setAttribute(
+-          "src",
+-          "appSend:" + encodeURIComponent(JSON.stringify(e)),
+-        ),
+-          document.documentElement.appendChild(t),
+-          t.parentNode.removeChild(t),
+-          (t = null));
+-      }
+-    else isAndroid && Native.appSend(JSON.stringify(e));
+-  }
+-  function l() {
+-    if (typeof Native != "undefined") {
+-      var e = Native.runQueue();
+-      if (e != null) {
+-        var t = JSON.parse(e);
+-        t.messages != null &&
+-          $.each(t.messages, function (e, t) {
+-            u(t);
+-          });
+-      }
++        if (isAndroid) {
++            $(window).on("online offline", function () {
++                runQueue();
++            });
++        }
++        if (isBrowser) {
++            bridgePollHandle = setInterval(function () {
++                runQueue();
++            }, window.STOCKHOLM_NATIVE_POLL_INTERVAL || 1000);
++        }
++    }
++
++    function appSend(payload, callback) {
++        setTimeout(function () {
++            registerCallback(payload, callback);
++            payload.id = nextId;
++            ++nextId;
++            showDebug == 2 && console.log("appSend: " + JSON.stringify(payload));
++            if (isBrowser && typeof Native == "undefined" && payload.method != "getNetStats") {
++                typeof callback == "function" && callback();
++                return;
++            }
++            sendToNative(payload);
++        }, 0);
++    }
++
++    function appReceive(message) {
++        console.log("appRec payload: ");
++        console.log(message);
++        if (message.params != undefined) {
++            if (message.method == "devices" && message.params.length > 0) {
++                var devices = "[";
++                for (var index = 0; index < message.params.length; index++) {
++                    index > 0 && (devices += ", ");
++                    devices += "(" + message.params[index].uID + ", " + message.params[index].ip + ")";
++                }
++                devices += "]";
++                showDebug == 2 && console.log("appReceive: " + message.id + "(id) / " + message.method + " / " + devices + "(devices) / " + message.result + "(result)");
++            } else {
++                showDebug == 2 && console.log("appReceive: " + message.id + "(id) / " + message.method + " / " + message.params.length + "(params length) / " + message.result + "(result)");
++            }
++        } else {
++            showDebug == 2 && console.log("appReceive: " + message.id + "(id) / " + message.method + " / " + message.result + "(result)");
++        }
++        setTimeout(function () {
++            try {
++                if (message.method) {
++                    log("appReceive (method:" + message.method + ")");
++                    if (message.error != null && message.error != "") {
++                        funcObj.setupWizard.appcomm_error(message);
++                    } else {
++                        funcObj.setupWizard.appcomm_receive(message);
++                    }
++                } else {
++                    message.error != null && message.error != "" && funcObj.setupWizard.appcomm_error(message);
++                    if (!callbacks[message.id]) {
++                        log("appReceive FAILED (callback index not found)");
++                        return;
++                    }
++                    var registered = callbacks[message.id];
++                    log("appReceive (result:" + message.result + ")");
++                    registered.callback.call(null, message.result);
++                    delete callbacks[message.id];
++                }
++            } catch (error) {
++                log("appReceive MESSAGE ERROR: " + error);
++            }
++        }, 0);
++    }
++
++    function registerCallback(payload, callback) {
++        if (typeof callback == "function") {
++            callbacks[nextId] = {};
++            callbacks[nextId].payload = payload;
++            callbacks[nextId].callback = callback;
++        }
++    }
++
++    function sendToNative(payload) {
++        showDebug == 2 && (isQT ? console.log("STOCKHOLM -> NATIVE - Payload: " + JSON.stringify(payload)) : console.log("STOCKHOLM -> NATIVE", payload));
++        if (isBrowser && typeof Native == "undefined") {
++            return;
++        }
++        if (isQT) {
++            showDebug == 2 && console.log("Setup: Using qtSetupNativeObj to send AppComm\n");
++            qtSetupNativeObj.appSend(JSON.stringify(payload));
++        } else if (isIOS) {
++            if (wkWebView) {
++                window.webkit.messageHandlers.jsHandler.postMessage(encodeURIComponent(JSON.stringify(payload)));
++            } else {
++                var iframe = document.createElement("IFRAME");
++                iframe.setAttribute("src", "appSend:" + encodeURIComponent(JSON.stringify(payload)));
++                document.documentElement.appendChild(iframe);
++                iframe.parentNode.removeChild(iframe);
++                iframe = null;
++            }
++        } else if (typeof Native != "undefined") {
++            Native.appSend(JSON.stringify(payload));
++        }
++    }
++
++    function runQueue() {
++        if (typeof Native != "undefined") {
++            var queue = Native.runQueue();
++            if (queue != null) {
++                var parsed = JSON.parse(queue);
++                parsed.messages != null && $.each(parsed.messages, function (index, message) {
++                    appReceive(message);
++                });
++            }
++        }
++    }
++
++    function log(message) {
++        console.log(message);
+     }
+-  }
+-  function c(e) {
+-    console.log(e);
+-  }
+-  var e = {},
+-    t = 0,
+-    n = {};
+-  ((this.appSend = o), (this.appReceive = u), r());
++
++    var callbacks = {};
++    var nextId = 0;
++    var bridgePollHandle = null;
++
++    this.appSend = appSend;
++    this.appReceive = appReceive;
++    init();
+ }
