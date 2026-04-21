@@ -6,6 +6,10 @@ build/
 !**/src/test/**/build/
 
 stockholm/
+!src/main/java/com/soundcork/stockholm/
+!src/main/java/com/soundcork/stockholm/**
+!src/test/java/com/soundcork/stockholm/
+!src/test/java/com/soundcork/stockholm/**
 stockholm*.zip
 Stockholm*.zip
 .env

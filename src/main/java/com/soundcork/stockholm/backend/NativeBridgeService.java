@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 final class NativeBridgeService implements AutoCloseable {
     private static final String DEFAULT_CLIENT_ID = "default";
     private static final String UNSUPPORTED = "unsupported";
+    private static final String MARGE_AUTH_TOKEN_KEY = "margeAuthToken";
+    private static final String MARGE_ACCOUNT_ID_KEY = "margeAccountID";
     private static final Map<String, String> DEFAULT_CONSTANTS = Map.of(
             "kilo", "a7928d7b43dcd49f0af31e5aeed26458"
     );
@@ -32,10 +34,15 @@ final class NativeBridgeService implements AutoCloseable {
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     NativeBridgeService(Path stateFile) {
+        this(stateFile, System.getenv());
+    }
+
+    NativeBridgeService(Path stateFile, Map<String, String> environment) {
         this.stateFile = stateFile;
         this.discoveryService = new SsdpDiscoveryService();
         loadState();
         seedDefaultConstants();
+        seedMargeSessionFromEnvironment(environment);
         LOGGER.debug("NativeBridgeService initialized with state file {}", stateFile);
     }
 
@@ -244,6 +251,29 @@ final class NativeBridgeService implements AutoCloseable {
         }
     }
 
+    private void seedMargeSessionFromEnvironment(Map<String, String> environment) {
+        if (environment == null || environment.isEmpty()) {
+            return;
+        }
+        LinkedHashMap<String, String> updates = new LinkedHashMap<>();
+        String authToken = firstNonBlank(
+                environment.get(MARGE_AUTH_TOKEN_KEY),
+                environment.get("MARGE_AUTH_TOKEN"));
+        String accountId = firstNonBlank(
+                environment.get(MARGE_ACCOUNT_ID_KEY),
+                environment.get("MARGE_ACCOUNT_ID"));
+        if (authToken != null) {
+            updates.put(MARGE_AUTH_TOKEN_KEY, authToken);
+        }
+        if (accountId != null) {
+            updates.put(MARGE_ACCOUNT_ID_KEY, accountId);
+        }
+        if (!updates.isEmpty()) {
+            LOGGER.info("Seeding Marge session value(s) from environment: {}", updates.keySet());
+            putStateValues(updates);
+        }
+    }
+
     private String getLegalDocPath(Map<String, Object> params) {
         String type = stringValue(params.get("type"));
         String lang = stringValue(params.get("lang"));
@@ -303,6 +333,15 @@ final class NativeBridgeService implements AutoCloseable {
             return String.valueOf(value);
         }
         return SimpleJson.stringify(value);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     @Override

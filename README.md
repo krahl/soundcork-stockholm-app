@@ -5,16 +5,19 @@ It can be used as a frontend for the [soundcork](https://github.com/deborahgu/so
 
 This project is under active development. Expect bugs and limitations.
 
-> [!TIP]
-> This project does not bundle the Stockholm frontend itself for potential legal reasons. Please download it from, e.g. the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ - choose the Stockholm zip file with version 27.0.13-4277-8963611.
-> After downloading, copy the Stockholm archive next to the `config` folder of this project and mount it via Docker Compose.
+> [!WARNING]
+> Bose says SoundTouch cloud support ends on May 6, 2026. Login against Bose servers already appears unreliable. If you want to this app for dev purposes against the Bose cloud you should use SoundTouch account ID, and credentials like `margeAccountID` and `margeAuthToken` from `%AppData%\SoundTouch\config.ini` Windows SoundTouch app before May 6, 2026.
 
-## Current scope
+> [!TIP]
+> Bose has made SoundTouch technical material available for community tooling, and Stockholm source/archive material is publicly available. We believe using the Stockholm code with this project is permitted. In an abundance of caution, this project does not bundle Stockholm directly; download it yourself from, for example, the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ and choose the Stockholm zip file with version `27.0.13-4277-8963611`.
+
+## Current Scope
 
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
 - Persists `getData` / `setData` values under `state/native-state.json`
+- Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
 - Reads backend configuration from `config/backend-config.json`
 - Uses backend configuration to control frontend `loggingLevel` / `showDebug`
 - Implements SSDP-based speaker discovery for `getDeviceList`
@@ -26,18 +29,48 @@ This project is under active development. Expect bugs and limitations.
   - `getConstant`
   - `canPerformAutoAPSetup`
 
-### Not implemented yet
+### Not Implemented Yet
 
 - Android-only setup flows such as Wi-Fi provisioning (`getNetStats`, `getSSIDList`, `setSSID`)
 - Native websocket shims for old Android browser constraints
 - App/gui update install flows
 - OAuth handoff flows that depended on mobile-native wrappers
 
-## Run
+## Docker Run
 
-We recommend running the backend with Docker. Customize it via `.env` file.
+Docker is the recommended way to run the backend.
 
-Example:
+1. Copy the example environment file and edit it:
+
+```shell
+cp .env.example .env
+```
+
+2. Download the Stockholm archive and place it here:
+
+```text
+stockholm_zip/stockholm.zip
+```
+
+The compose file mounts the `stockholm_zip` directory instead of mounting `stockholm.zip` directly. This avoids a Docker Desktop/Windows pitfall where a missing file bind mount can be created as a directory.
+
+3. Start the app:
+
+```shell
+docker compose up --build
+```
+
+After starting the backend, open:
+
+```text
+http://127.0.0.1:8088/
+```
+
+## Environment
+
+The compose setup uses `.env` for interpolation. It intentionally does not use `env_file`, because Compose gives explicit `environment` entries precedence over `env_file` values and that made local overrides confusing.
+
+Common values:
 
 ```env
 TZ=Europe/Berlin
@@ -47,25 +80,43 @@ BACKEND_URL=http://soundcork:8000
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
 ```
 
-```shell
-docker compose up --build
+Optional Marge session values:
+
+```env
+MARGE_AUTH_TOKEN=
+MARGE_ACCOUNT_ID=
 ```
 
-You can also run it locally with Java 21 and Gradle.
+`MARGE_AUTH_TOKEN` is the auth string stored by the Stockholm/SoundTouch flow. The backend also accepts `margeAuthToken` and `margeAccountID` aliases.
+
+If these variables are set, they overwrite the same keys in `state/native-state.json` on startup and are persisted there. If they are absent, values in `state/native-state.json` will be used if existing. Treat both `.env` and `state/native-state.json` as sensitive local files.
+
+## Networking
+
+The default compose file uses host networking so SSDP multicast discovery works by default on Linux and other host-network-capable setups.
+
+If you are on Windows or otherwise need bridge networking, use the override file:
+
+```shell
+docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
+```
+
+The override restores port publishing and bridge networking for Docker Desktop setups that do not support host networking.
+
+## Local Java Run
+
+You can also run the backend locally with Java 21 and Gradle:
 
 ```shell
 ./gradlew --gradle-user-home .gradle-home run
 ```
 
-After starting the backend, open the frontend in a browser at:
-
-```text
-http://127.0.0.1:8088/
-```
+For local runs, make sure a patched `stockholm` directory already exists next to this README.
 
 To disable frontend debug logging, set `frontendLoggingLevel` to `0` in `config/backend-config.json`.
 
-## Known issues
+## Known Issues
 
-- Reverse proxies do not yet work reliably (do not use TLS encrypted reverse proxies for now - see below).
-- Since this app connects to the SoundTouch speakers via unencrypted Websockets, the browser may block the connection if the frontend is served over HTTPS. In that case, use HTTP for the frontend.
+- Bose login/OAuth flows appear to be unavailable and may become impossible as the SoundTouch cloud shutdown approaches.
+- HTTP reverse proxies do not yet work reliably; avoid TLS encrypted reverse proxies for now.
+- Since this app connects to SoundTouch speakers via unencrypted WebSockets, the browser may block the connection if the frontend is served over HTTPS. Use HTTP for the frontend.

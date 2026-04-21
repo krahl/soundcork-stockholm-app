@@ -2,24 +2,21 @@ services:
   backend:
     build: .
     image: soundcork-stockholm-app
-    # host network mode so that speakers can be found - disable in Docker Desktop for Windows
+    # Host networking keeps SSDP multicast discovery working by default.
     network_mode: host
-    # If not in host mode
-    #ports:
-      #- 8088:8088
     volumes:
       - ./state:/app/backend/state
-      # Speeds up startup if stockholm is mounted and unzip can be skipped
       - ./stockholm:/app/stockholm
-      - ./stockholm.zip:/app/stockholm.zip
+      - ./stockholm_zip:/app/stockholm_zip:ro
       # Optional: Mount custom logging config
-      #- /opt/stockholm-app/config/logback.xml:/app/logback.xml
+      # - ./config/logback.xml:/app/logback.xml:ro
     environment:
-      - TZ=Europe/Berlin
-      # All interfaces (0.0.0.0), localhost (127.0.0.1) or custom host (192.168.0.123)
-      - BACKEND_BIND_IP=0.0.0.0
-      - BACKEND_PORT=8088
-      - BACKEND_URL=http://soundcork.local.example.com:8000
-      # marge/ suffix is important if used against soundcork
-      - AUTH_SERVICE_URL=http://soundcork.local.example.com:8000/marge/
+      TZ: ${TZ:-Europe/Berlin}
+      BACKEND_BIND_IP: ${BACKEND_BIND_IP:-0.0.0.0}
+      BACKEND_PORT: ${BACKEND_PORT:-8088}
+      BACKEND_URL: ${BACKEND_URL:-http://soundcork:8000}
+      # The trailing marge/ suffix is important when used against soundcork.
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://soundcork:8000/marge/}
+      MARGE_AUTH_TOKEN: ${MARGE_AUTH_TOKEN:-}
+      MARGE_ACCOUNT_ID: ${MARGE_ACCOUNT_ID:-}
     restart: unless-stopped

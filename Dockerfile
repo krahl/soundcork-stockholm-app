@@ -18,6 +18,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends jq unzip npm patch && \
     rm -rf /var/lib/apt/lists/*
 
+RUN npm install -g prettier@3.8.3 && \
+    npm cache clean --force
+
 COPY --from=builder /app/build/install/app/ ./backend/
 COPY config/ ./backend/config/
 COPY update-urls.sh ./
