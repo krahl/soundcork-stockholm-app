@@ -9,7 +9,9 @@ This project is under active development. Expect bugs and limitations.
 > Bose says SoundTouch cloud support ends on May 6, 2026. Login against Bose servers already appears unreliable. If you want to this app for dev purposes against the Bose cloud you should use SoundTouch account ID, and credentials like `margeAccountID` and `margeAuthToken` from `%AppData%\SoundTouch\config.ini` Windows SoundTouch app before May 6, 2026.
 
 > [!TIP]
-> Bose has made SoundTouch technical material available for community tooling, and Stockholm source/archive material is publicly available. We believe using the Stockholm code with this project is permitted. In an abundance of caution, this project does not bundle Stockholm directly; download it yourself from, for example, the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ and choose the Stockholm zip file with version `27.0.13-4277-8963611`.
+> Bose has made SoundTouch technical material available for community tooling, and Stockholm source/archive material is publicly available. We believe using the Stockholm code with this project is permitted.
+> This project does not bundle the Stockholm frontend itself. Please download it from, e.g. the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ - choose the Stockholm zip file with version `27.0.13-4277-8963611`.
+> After downloading, copy the Stockholm archive into the `stockholm_zip` folder of this project. It will be expanded and patched to run with the backend.
 
 ## Current Scope
 
@@ -38,7 +40,7 @@ This project is under active development. Expect bugs and limitations.
 
 ## Docker Run
 
-Docker is the recommended way to run the backend.
+Docker is the recommended way to run the backend. Customize it via the `.env` file. Use `.env.example` as a template.
 
 1. Copy the example environment file and edit it:
 
@@ -108,12 +110,18 @@ The override restores port publishing and bridge networking for Docker Desktop s
 You can also run the backend locally with Java 21 and Gradle:
 
 ```shell
-./gradlew --gradle-user-home .gradle-home run
+./gradlew run
 ```
 
-For local runs, make sure a patched `stockholm` directory already exists next to this README.
+Note that if you run the service outside of docker then you will need to unzip and patch Stockholm on your own (or run the docker setup first).  See `docker-entrypoint.sh` for details.
 
 To disable frontend debug logging, set `frontendLoggingLevel` to `0` in `config/backend-config.json`.
+
+## Logging in
+
+If using soundcork as the backend, you can login to your account just using your account number and any domain as an email address, plus any password.  So `1234567@example.com`
+
+After you log in for the first time, the app will try to take you through setting up your speakers.  If you have already configured all of your speakers, you should be able just to refresh `http://localhost:8088/` and access the main app.
 
 ## Known Issues
 
