@@ -13,6 +13,8 @@ This project is under active development. Expect bugs and limitations.
 > This project does not bundle the Stockholm frontend itself. Please download it from, e.g. the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ - choose the Stockholm zip file with version `27.0.13-4277-8963611`.
 > After downloading, copy the Stockholm archive into the `stockholm_zip` folder of this project. It will be expanded and patched to run with the backend.
 
+![Stockholm in Chrome](./docs/images/stockholm.png)
+
 ## Current Scope
 
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
