@@ -134,7 +134,6 @@ public final class BackendApplication {
         info.put("currentMargeUrl", soundcorkDataService.currentMargeUrl());
         info.put("overrideMargeUrl", soundcorkDataService.overrideMargeUrl());
         info.put("currentUpdateUrl", soundcorkDataService.currentUpdateUrl());
-        info.put("currentKilo", soundcorkDataService.currentKilo());
         info.put("bmxApiKey", soundcorkDataService.bmxApiKey());
         info.put("margeServerKey", soundcorkDataService.margeServerKey());
         info.put("margeServerKeyHeader", soundcorkDataService.margeServerKeyHeader());

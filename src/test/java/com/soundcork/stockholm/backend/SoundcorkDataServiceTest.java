@@ -41,9 +41,7 @@ final class SoundcorkDataServiceTest {
                   }
                 }
                 """, StandardCharsets.UTF_8);
-        Files.writeString(stockholmJson.resolve("override.json"), """
-                {"kilo":"11111111111111111111111111111111"}
-                """, StandardCharsets.UTF_8);
+
 
         NativeBridgeService bridgeService = new NativeBridgeService(backendState.resolve("native-state.json"));
         bridgeService.putStateValues(Map.of(
@@ -52,7 +50,6 @@ final class SoundcorkDataServiceTest {
 
         SoundcorkDataService dataService = new SoundcorkDataService(workspaceRoot, bridgeService);
 
-        assertEquals("11111111111111111111111111111111", dataService.currentKilo());
         assertEquals("https://custom-streaming.example/", dataService.currentMargeUrl());
         assertEquals("https://custom-updates.example/", dataService.currentUpdateUrl());
         assertEquals("https://custom-registry.example/bmx/registry/v1/services", dataService.bmxRegistryUrl());

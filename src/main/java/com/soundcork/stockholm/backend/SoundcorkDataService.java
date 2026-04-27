@@ -65,17 +65,6 @@ final class SoundcorkDataService {
         LOGGER.debug("Loaded SoundcorkDataService using config={} override={}", configFile, overrideFile);
     }
 
-    String currentKilo() {
-        if (SoundcorkCrypto.isHexString(overrideKilo)) {
-            return overrideKilo;
-        }
-        String persistedKilo = bridgeService.getStateValue("constant.kilo");
-        if (SoundcorkCrypto.isHexString(persistedKilo)) {
-            return persistedKilo;
-        }
-        return SoundcorkCrypto.DEFAULT_KILO;
-    }
-
     String authServer() {
         return normalizeAuthServer(bridgeService.getStateValue("authServer"));
     }
@@ -165,15 +154,7 @@ final class SoundcorkDataService {
     }
 
     String bmxApiKey() {
-        if (!SoundcorkCrypto.isHexString(encryptedBmxToken)) {
-            return null;
-        }
-        try {
-            return SoundcorkCrypto.decryptHex(currentKilo(), encryptedBmxToken);
-        } catch (IllegalStateException exception) {
-            LOGGER.warn("Failed to decrypt BMX API key with current kilo", exception);
-            return null;
-        }
+      return encryptedBmxToken;
     }
 
     String margeAuthToken() {
@@ -254,50 +235,9 @@ final class SoundcorkDataService {
     }
 
     String bmxRegistryUrl() {
-        String registryInfo = bridgeService.getStateValue("bmxRegistryInfo");
-        if (SoundcorkCrypto.isHexString(registryInfo)) {
-            String decrypted = decryptWithCurrentKilo(registryInfo);
-            if (decrypted != null) {
-                try {
-                    Map<String, Object> info = SimpleJson.asObject(SimpleJson.parse(decrypted));
-                    String url = stringValue(info.get("url"));
-                    if ("dev".equals(url)) {
-                        return decryptWithCurrentKilo(encryptedBmxServerUrlAlt);
-                    }
-                    if (url != null && !url.isBlank()) {
-                        return url;
-                    }
-                } catch (RuntimeException exception) {
-                    LOGGER.warn("Failed to parse decrypted BMX registry info", exception);
-                }
-            }
-        }
         return defaultBmxRegistryUrl;
     }
 
-    String decryptWithCurrentKilo(String encryptedHex) {
-        if (!SoundcorkCrypto.isHexString(encryptedHex)) {
-            return null;
-        }
-        try {
-            return SoundcorkCrypto.decryptHex(currentKilo(), encryptedHex);
-        } catch (IllegalStateException exception) {
-            LOGGER.warn("Failed to decrypt value with current kilo", exception);
-            return null;
-        }
-    }
-
-    String decryptWithOldKilo(String encryptedHex) {
-        if (!SoundcorkCrypto.isHexString(encryptedHex)) {
-            return null;
-        }
-        try {
-            return SoundcorkCrypto.decryptHex(SoundcorkCrypto.OLD_KILO, encryptedHex);
-        } catch (IllegalStateException exception) {
-            LOGGER.warn("Failed to decrypt value with old kilo", exception);
-            return null;
-        }
-    }
 
     boolean isBmxTarget(String host) {
         if (host == null || host.isBlank()) {
