@@ -29,7 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.InputSource;
 
-final class SsdpDiscoveryService {
+final class SsdpDiscoveryService implements NativeBridgeService.DiscoveryService {
     private static final String MULTICAST_HOST = "239.255.255.250";
     private static final int SSDP_PORT = 1900;
     private static final int MX_SECONDS = 1;
@@ -67,7 +67,7 @@ final class SsdpDiscoveryService {
         return discoverRenderers(null, onDiscovered);
     }
 
-    List<Map<String, Object>> discoverRenderers(String expectedAccountId,
+    public List<Map<String, Object>> discoverRenderers(String expectedAccountId,
             Consumer<List<Map<String, Object>>> onDiscovered) {
         LOGGER.debug("Starting renderer SSDP discovery with probes={}, intervalMs={}, graceMs={}",
                 SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
@@ -104,7 +104,7 @@ final class SsdpDiscoveryService {
         return results;
     }
 
-    List<Map<String, Object>> discoverServers() {
+    public List<Map<String, Object>> discoverServers() {
         LOGGER.debug("Starting media-server SSDP discovery with probes={}, intervalMs={}, graceMs={}",
                 SEARCH_PROBE_COUNT, SEARCH_PROBE_INTERVAL_MS, SEARCH_RESPONSE_GRACE_MS);
         Map<String, Map<String, Object>> servers = new LinkedHashMap<>();

@@ -19,4 +19,5 @@ services:
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://soundcork:8000/marge/}
       MARGE_AUTH_TOKEN: ${MARGE_AUTH_TOKEN:-}
       MARGE_ACCOUNT_ID: ${MARGE_ACCOUNT_ID:-}
+      # BACKEND_DEVICE_CACHE_ENABLED: ${BACKEND_DEVICE_CACHE_ENABLED:-true}
     restart: unless-stopped

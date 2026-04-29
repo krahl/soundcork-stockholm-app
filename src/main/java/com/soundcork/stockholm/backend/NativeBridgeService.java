@@ -7,19 +7,25 @@ import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 final class NativeBridgeService implements AutoCloseable {
     private static final String DEFAULT_CLIENT_ID = "default";
     private static final String UNSUPPORTED = "unsupported";
+    private static final String DEVICE_CACHE_KEY = "deviceCache";
+    private static final String DEVICE_CACHE_ENABLED_KEY = "BACKEND_DEVICE_CACHE_ENABLED";
     private static final String MARGE_AUTH_TOKEN_KEY = "margeAuthToken";
     private static final String MARGE_ACCOUNT_ID_KEY = "margeAccountID";
     private static final Map<String, String> DEFAULT_CONSTANTS = Map.of(
@@ -28,7 +34,8 @@ final class NativeBridgeService implements AutoCloseable {
     private static final Logger LOGGER = LoggerFactory.getLogger(NativeBridgeService.class);
 
     private final Path stateFile;
-    private final SsdpDiscoveryService discoveryService;
+    private final DiscoveryService discoveryService;
+    private final boolean deviceCacheEnabled;
     private final ConcurrentMap<String, String> state = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ArrayDeque<Map<String, Object>>> queues = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -38,12 +45,18 @@ final class NativeBridgeService implements AutoCloseable {
     }
 
     NativeBridgeService(Path stateFile, Map<String, String> environment) {
+        this(stateFile, environment, new SsdpDiscoveryService());
+    }
+
+    NativeBridgeService(Path stateFile, Map<String, String> environment, DiscoveryService discoveryService) {
         this.stateFile = stateFile;
-        this.discoveryService = new SsdpDiscoveryService();
+        this.discoveryService = discoveryService;
+        this.deviceCacheEnabled = parseEnabled(environment == null ? null : environment.get(DEVICE_CACHE_ENABLED_KEY), true);
         loadState();
         seedDefaultConstants();
         seedMargeSessionFromEnvironment(environment);
-        LOGGER.debug("NativeBridgeService initialized with state file {}", stateFile);
+        LOGGER.debug("NativeBridgeService initialized with state file {} and deviceCacheEnabled={}",
+                stateFile, deviceCacheEnabled);
     }
 
     void handleAppSend(String clientId, String payload) {
@@ -91,13 +104,28 @@ final class NativeBridgeService implements AutoCloseable {
                 case "canPerformAutoAPSetup" -> enqueueCallbackResult(queueId, id, createAutoApSetupInfo(), "");
                 case "getDeviceList" -> submitAsync(queueId, id, () -> {
                     String accountId = blankToNull(state.get("margeAccountID"));
+                    Set<String> emittedDevices = new HashSet<>();
+                    if (deviceCacheEnabled) {
+                        List<Map<String, Object>> cachedDevices = cachedDevices();
+                        List<Map<String, Object>> newCachedDevices = filterNewDevices(cachedDevices, emittedDevices);
+                        if (!newCachedDevices.isEmpty()) {
+                            LOGGER.debug("Emitting {} cached renderer device(s) for client '{}'",
+                                    newCachedDevices.size(), queueId);
+                            enqueueMethod(queueId, "devices", newCachedDevices);
+                        }
+                    }
                     LOGGER.debug("Starting renderer discovery for client '{}'", queueId);
                     List<Map<String, Object>> devices = discoveryService.discoverRenderers(
                             accountId,
-                            partial -> enqueueMethod(queueId, "devices", partial));
+                            partial -> {
+                                List<Map<String, Object>> newDevices = filterNewDevices(partial, emittedDevices);
+                                if (!newDevices.isEmpty()) {
+                                    enqueueMethod(queueId, "devices", newDevices);
+                                }
+                            });
                     LOGGER.debug("Renderer discovery finished with {} device(s) for client '{}'",
                             devices.size(), queueId);
-                    if (devices.isEmpty()) {
+                    if (devices.isEmpty() && emittedDevices.isEmpty()) {
                         enqueueMethod(queueId, "devices", devices);
                     }
                 });
@@ -232,6 +260,87 @@ final class NativeBridgeService implements AutoCloseable {
         return result;
     }
 
+    private List<Map<String, Object>> cachedDevices() {
+        String cache = state.get(DEVICE_CACHE_KEY);
+        if (cache == null || cache.isBlank()) {
+            return List.of();
+        }
+        try {
+            Object parsed = SimpleJson.parse(cache);
+            Map<String, Object> object = SimpleJson.asObject(parsed);
+            if (!(object.get("array") instanceof List<?> devices)) {
+                return List.of();
+            }
+            ArrayList<Map<String, Object>> validDevices = new ArrayList<>();
+            for (Object device : devices) {
+                if (!(device instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                Map<String, Object> deviceObject = SimpleJson.asObject(map);
+                String ip = blankToNull(stringValue(deviceObject.get("ip")));
+                String uid = blankToNull(stringValue(deviceObject.get("uID")));
+                if (ip == null || uid == null) {
+                    continue;
+                }
+                LinkedHashMap<String, Object> cachedDevice = new LinkedHashMap<>();
+                cachedDevice.put("ip", ip);
+                cachedDevice.put("uID", uid);
+                copyIfPresent(cachedDevice, deviceObject, "name");
+                copyIfPresent(cachedDevice, deviceObject, "type");
+                copyIfPresent(cachedDevice, deviceObject, "aID");
+                validDevices.add(cachedDevice);
+            }
+            return validDevices;
+        } catch (RuntimeException exception) {
+            LOGGER.warn("Ignoring malformed persisted device cache", exception);
+            return List.of();
+        }
+    }
+
+    private List<Map<String, Object>> filterNewDevices(List<Map<String, Object>> devices, Set<String> emittedDevices) {
+        if (devices == null || devices.isEmpty()) {
+            return List.of();
+        }
+        ArrayList<Map<String, Object>> newDevices = new ArrayList<>();
+        for (Map<String, Object> device : devices) {
+            String key = deviceKey(device);
+            if (key == null || !emittedDevices.add(key)) {
+                continue;
+            }
+            newDevices.add(new LinkedHashMap<>(device));
+        }
+        return newDevices;
+    }
+
+    private String deviceKey(Map<String, Object> device) {
+        if (device == null) {
+            return null;
+        }
+        String uid = blankToNull(stringValue(device.get("uID")));
+        String ip = blankToNull(stringValue(device.get("ip")));
+        if (uid != null && ip != null) {
+            return normalizeUid(uid) + "|" + ip;
+        }
+        if (uid != null) {
+            return normalizeUid(uid);
+        }
+        return ip == null ? null : "ip|" + ip;
+    }
+
+    private String normalizeUid(String uid) {
+        String normalized = uid;
+        if (normalized.regionMatches(true, 0, "BO5EBO5E-F00D-F00D-FEED-", 0, 24)) {
+            normalized = normalized.substring(24);
+        }
+        return normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private void copyIfPresent(Map<String, Object> target, Map<String, Object> source, String key) {
+        if (source.containsKey(key)) {
+            target.put(key, source.get(key));
+        }
+    }
+
     private Object getConstant(Map<String, Object> params) {
         String name = stringValue(params.get("name"));
         if (name == null) {
@@ -354,9 +463,26 @@ final class NativeBridgeService implements AutoCloseable {
         return normalized.isEmpty() ? null : normalized;
     }
 
+    private boolean parseEnabled(String value, boolean defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "false", "0", "no", "off" -> false;
+            default -> true;
+        };
+    }
+
     @Override
     public void close() {
         LOGGER.debug("Shutting down NativeBridgeService executor");
         executor.shutdownNow();
+    }
+
+    interface DiscoveryService {
+        List<Map<String, Object>> discoverRenderers(String expectedAccountId,
+                Consumer<List<Map<String, Object>>> onDiscovered);
+
+        List<Map<String, Object>> discoverServers();
     }
 }
