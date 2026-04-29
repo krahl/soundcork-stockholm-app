@@ -24,7 +24,7 @@ RUN npm install -g prettier@3.8.3 && \
 COPY --from=builder /app/build/install/app/ ./backend/
 COPY config/ ./backend/config/
 COPY update-urls.sh ./
-COPY stockholm-changes_v1.patch ./
+COPY stockholm-changes_v*.patch ./
 
 RUN mkdir -p ./backend/state
 

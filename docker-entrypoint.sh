@@ -5,9 +5,7 @@ cd /app
 
 STOCKHOLM_DIR="/app/stockholm"
 STOCKHOLM_ZIP_DIR="/app/stockholm_zip"
-PATCH_VERSION=1
 PATCH_MARKER="${STOCKHOLM_DIR}/.soundcork-stockholm-app.json"
-PATCH_FILE="/app/stockholm-changes_v1.patch"
 
 LOGBACK_CONFIG=""
 if [ -f /app/logback.xml ]; then
@@ -25,15 +23,69 @@ find_stockholm_zip() {
   return 0
 }
 
+get_current_patch_version() {
+  if [ ! -f "${PATCH_MARKER}" ]; then
+    echo 0
+    return
+  fi
+
+  jq -r '.patchVersion // 0' "${PATCH_MARKER}" 2>/dev/null || echo 0
+}
+
+get_patch_version_from_file() {
+  local patch_file version
+
+  patch_file="$1"
+  version="${patch_file##*/}"
+  version="${version#stockholm-changes_v}"
+  version="${version%.patch}"
+
+  case "${version}" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  echo "${version}"
+}
+
+find_patch_file() {
+  local version
+
+  version="$1"
+  if [ -f "/app/stockholm-changes_v${version}.patch" ]; then
+    echo "/app/stockholm-changes_v${version}.patch"
+    return 0
+  fi
+
+  return 1
+}
+
+discover_patch_versions() {
+  local patch_file version
+
+  for patch_file in /app/stockholm-changes_v*.patch; do
+    [ -e "${patch_file}" ] || continue
+    version="$(get_patch_version_from_file "${patch_file}")" || continue
+    echo "${version}"
+  done | sort -n
+}
+
 is_marker_current() {
-  [ -f "${PATCH_MARKER}" ] && jq -e ".patchVersion == ${PATCH_VERSION}" "${PATCH_MARKER}" >/dev/null 2>&1
+  local version
+
+  version="$1"
+  [ -f "${PATCH_MARKER}" ] && jq -e ".patchVersion == ${version}" "${PATCH_MARKER}" >/dev/null 2>&1
 }
 
 write_patch_marker() {
+  local version
+
+  version="$1"
   cat >"${PATCH_MARKER}" <<EOF
 {
   "project": "soundcork-stockholm-app",
-  "patchVersion": ${PATCH_VERSION}
+  "patchVersion": ${version}
 }
 EOF
 }
@@ -53,38 +105,135 @@ format_stockholm_js() {
   prettier --ignore-path /dev/null --write "stockholm/**/*.js"
 }
 
+filter_stockholm_patch() {
+  local patch_file filtered_patch
+
+  patch_file="$1"
+  filtered_patch="$(mktemp)"
+
+  # The generated patch files may also include repo-only hunks such as README updates.
+  awk '
+    /^diff --git / {
+      keep = ($0 ~ /^diff --git a\/stockholm\//)
+    }
+
+    keep {
+      print
+    }
+  ' "${patch_file}" >"${filtered_patch}"
+
+  if [ ! -s "${filtered_patch}" ]; then
+    rm -f "${filtered_patch}"
+    echo "Patch ${patch_file} does not contain any stockholm/ changes."
+    exit 1
+  fi
+
+  echo "${filtered_patch}"
+}
+
 patch_is_applied() {
-  patch -p1 -R --dry-run --batch --silent <"${PATCH_FILE}" >/dev/null 2>&1
+  local patch_file
+
+  patch_file="$1"
+  patch -p1 -R --dry-run --batch --silent <"${patch_file}" >/dev/null 2>&1
 }
 
 patch_can_apply() {
-  patch -p1 --dry-run --batch --silent <"${PATCH_FILE}" >/dev/null 2>&1
+  local patch_file
+
+  patch_file="$1"
+  patch -p1 --dry-run --batch --silent <"${patch_file}" >/dev/null 2>&1
 }
 
-apply_v1_patch() {
-  if patch_is_applied; then
-    echo "Soundcork Stockholm patch v${PATCH_VERSION} is already applied."
-    is_marker_current || write_patch_marker
+apply_patch_file() {
+  local version patch_file filtered_patch should_format
+
+  version="$1"
+  patch_file="$2"
+  should_format="${3:-false}"
+  filtered_patch="$(filter_stockholm_patch "${patch_file}")"
+
+  if is_marker_current "${version}"; then
+    echo "Soundcork Stockholm patch marker exists for v${version}, but the patch is incomplete."
+    echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
+    rm -f "${filtered_patch}"
+    exit 1
+  fi
+
+  echo "Preparing Stockholm frontend and applying Soundcork patch v${version}."
+  if [ "${should_format}" = "true" ]; then
+    format_stockholm_js
+  fi
+
+  if ! patch_can_apply "${filtered_patch}"; then
+    if patch_is_applied "${filtered_patch}"; then
+      echo "Soundcork Stockholm patch v${version} is already applied."
+      write_patch_marker "${version}"
+      rm -f "${filtered_patch}"
+      return
+    fi
+
+    echo "Soundcork Stockholm patch v${version} cannot be applied cleanly."
+    echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
+    rm -f "${filtered_patch}"
+    exit 1
+  fi
+
+  if patch -p1 --batch <"${filtered_patch}"; then
+    write_patch_marker "${version}"
+    rm -f "${filtered_patch}"
     return
   fi
 
-  if is_marker_current; then
-    echo "Soundcork Stockholm patch marker exists, but the patch is incomplete."
-    echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
-    exit 1
+  if patch_is_applied "${filtered_patch}"; then
+    echo "Soundcork Stockholm patch v${version} is already applied."
+    write_patch_marker "${version}"
+    rm -f "${filtered_patch}"
+    return
   fi
 
-  echo "Preparing Stockholm frontend and applying Soundcork patch v${PATCH_VERSION}."
-  format_stockholm_js
+  echo "Soundcork Stockholm patch v${version} failed while applying."
+  echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
+  rm -f "${filtered_patch}"
+  exit 1
+}
 
-  if ! patch_can_apply; then
-    echo "Soundcork Stockholm patch v${PATCH_VERSION} cannot be applied cleanly."
-    echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
-    exit 1
+apply_pending_patches() {
+  local current_version version patch_file current_patch_file current_filtered_patch
+
+  current_version="$(get_current_patch_version)"
+
+  current_patch_file="$(find_patch_file "${current_version}" || true)"
+  if [ -n "${current_patch_file}" ]; then
+    current_filtered_patch="$(filter_stockholm_patch "${current_patch_file}")"
+    if ! patch_is_applied "${current_filtered_patch}"; then
+      echo "Soundcork Stockholm patch marker says v${current_version} is applied, but the patch is incomplete."
+      echo "Remove the generated Stockholm directory and restart so it can be extracted cleanly."
+      rm -f "${current_filtered_patch}"
+      exit 1
+    fi
+    rm -f "${current_filtered_patch}"
   fi
 
-  patch -p1 --batch <"${PATCH_FILE}"
-  write_patch_marker
+  while IFS= read -r version; do
+    [ -n "${version}" ] || continue
+    if [ "${version}" -le "${current_version}" ]; then
+      continue
+    fi
+
+    patch_file="$(find_patch_file "${version}")"
+    if [ -z "${patch_file}" ]; then
+      echo "Expected patch file /app/stockholm-changes_v${version}.patch is missing."
+      exit 1
+    fi
+
+    if [ "${current_version}" -eq 0 ] && [ "${version}" -eq 1 ]; then
+      apply_patch_file "${version}" "${patch_file}" true
+    else
+      apply_patch_file "${version}" "${patch_file}" false
+    fi
+    current_version="${version}"
+  done < <(discover_patch_versions)
 }
 
 prepare_stockholm() {
@@ -104,7 +253,7 @@ prepare_stockholm() {
   fi
 
   copy_update_script
-  apply_v1_patch
+  apply_pending_patches
 }
 
 prepare_stockholm
