@@ -17,9 +17,9 @@ final class NativeBridgeServiceTest {
 
     @Test
     void envMargeSessionPopulatesEmptyNativeState() throws IOException {
-        Path stateFile = tempDir.resolve("native-state.json");
+        Path stateFile = tempDir.resolve("default.json");
 
-        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
+        try (NativeBridgeService bridgeService = new NativeBridgeService(tempDir, Map.of(
                 "margeAuthToken", "token-from-env",
                 "margeAccountID", "1234567"))) {
             assertEquals("token-from-env", bridgeService.getStateValue("margeAuthToken"));
@@ -48,20 +48,20 @@ final class NativeBridgeServiceTest {
 
     @Test
     void absentEnvPreservesPersistedNativeState() throws IOException {
-        Path stateFile = tempDir.resolve("native-state.json");
+        Path stateFile = tempDir.resolve("default.json");
         Files.writeString(stateFile, """
                 {"margeAuthToken":"persisted-token","margeAccountID":"3456789"}
                 """, StandardCharsets.UTF_8);
 
-        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+        try (NativeBridgeService bridgeService = new NativeBridgeService(tempDir, Map.of())) {
             assertEquals("persisted-token", bridgeService.getStateValue("margeAuthToken"));
             assertEquals("3456789", bridgeService.getStateValue("margeAccountID"));
         }
     }
 
     @Test
-    void getDataReturnsEnvSeededMargeValues() {
-        Path stateFile = tempDir.resolve("native-state.json");
+    void getDataReturnsEnvSeededMargeValues() throws IOException {
+        Path stateFile = tempDir;
 
         try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
                 "margeAuthToken", "token-for-get-data",
@@ -81,8 +81,8 @@ final class NativeBridgeServiceTest {
     }
 
     @Test
-    void exactEnvNamesTakePrecedenceOverAliases() {
-        Path stateFile = tempDir.resolve("native-state.json");
+    void exactEnvNamesTakePrecedenceOverAliases() throws IOException {
+        Path stateFile = tempDir;
 
         try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
                 "margeAuthToken", "exact-token",
