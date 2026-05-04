@@ -1,0 +1,68 @@
+diff --git a/stockholm/js/app_comm.js b/stockholm/js/app_comm.js
+index 8f2b07b..875d6fe 100644
+--- a/stockholm/js/app_comm.js
++++ b/stockholm/js/app_comm.js
+@@ -68,13 +68,17 @@ function AppComm() {
+             window.localStorage.setItem(clientIdKey, clientId);
+         }
+ 
++        function resolveWebviewUrl(url) {
++            return new URL(url, window.location.origin + "/").href;
++        }
++
+         window.Native = {
+             appSend: function (jsonString) {
+                 var payload = JSON.parse(jsonString);
+                 switch (payload.method) {
+                     case "reloadWebview":
+                         if (payload.params && payload.params.url) {
+-                            window.location.href = payload.params.url;
++                            window.location.href = resolveWebviewUrl(payload.params.url);
+                         }
+                         return;
+                     case "openUrl":
+diff --git a/stockholm/js/browser_native_bridge.js b/stockholm/js/browser_native_bridge.js
+index 5dfa7fa..2b7e562 100644
+--- a/stockholm/js/browser_native_bridge.js
++++ b/stockholm/js/browser_native_bridge.js
+@@ -13,12 +13,16 @@
+         window.localStorage.setItem(clientIdKey, clientId);
+     }
+ 
++    function resolveWebviewUrl(url) {
++        return new URL(url, window.location.origin + "/").href;
++    }
++
+     function appSend(jsonString) {
+         var payload = JSON.parse(jsonString);
+         switch (payload.method) {
+             case "reloadWebview":
+                 if (payload.params && payload.params.url) {
+-                    window.location.href = payload.params.url;
++                    window.location.href = resolveWebviewUrl(payload.params.url);
+                 }
+                 return;
+             case "openUrl":
+diff --git a/stockholm/setup/js/app_comm.js b/stockholm/setup/js/app_comm.js
+index 58f71d2..ada2175 100644
+--- a/stockholm/setup/js/app_comm.js
++++ b/stockholm/setup/js/app_comm.js
+@@ -68,13 +68,17 @@ function AppComm() {
+             window.localStorage.setItem(clientIdKey, clientId);
+         }
+ 
++        function resolveWebviewUrl(url) {
++            return new URL(url, window.location.origin + "/").href;
++        }
++
+         window.Native = {
+             appSend: function (jsonString) {
+                 var payload = JSON.parse(jsonString);
+                 switch (payload.method) {
+                     case "reloadWebview":
+                         if (payload.params && payload.params.url) {
+-                            window.location.href = payload.params.url;
++                            window.location.href = resolveWebviewUrl(payload.params.url);
+                         }
+                         return;
+                     case "openUrl":
