@@ -1,0 +1,44 @@
+diff --git a/stockholm/js/now_play.js b/stockholm/js/now_play.js
+index 5c8637e..c54f82b 100644
+--- a/stockholm/js/now_play.js
++++ b/stockholm/js/now_play.js
+@@ -1666,6 +1666,21 @@ function NowPlaying() {
+   function yt(e, t, n) {
+     funcObj.UIMain.checkMainDisp() && e != null && O !== e && bt(e, t);
+   }
++  function artworkProxyUrl(e) {
++    return window.StockholmBrowserHttpProxy &&
++      typeof window.StockholmBrowserHttpProxy.proxyUrl == "function"
++      ? window.StockholmBrowserHttpProxy.proxyUrl(e)
++      : e;
++  }
++  function HtColor(e) {
++    try {
++      return funcObj.colorThief.getColor(e);
++    } catch (t) {
++      showDebug &&
++        console.warn("now_play.js: unable to sample artwork color", t);
++      return [0, 0, 0];
++    }
++  }
+   function bt(t, n) {
+     t != undefined && t != null
+       ? (e != undefined &&
+@@ -1684,7 +1699,7 @@ function NowPlaying() {
+         (e.onerror = function (e) {
+           gt(null);
+         }),
+-        (e.src = t),
++        (e.src = artworkProxyUrl(t)),
+         (O = t),
+         dt(!1, "image"))
+       : ((O = ""), dt(!1, "clr_image"));
+@@ -1762,7 +1777,7 @@ function NowPlaying() {
+           "background-color": u === "none" ? "#000" : "",
+         }));
+       if (!i) {
+-        var f = funcObj.colorThief.getColor(e);
++        var f = HtColor(e);
+         (n.find(".gradient_container").removeClass("disp_off"),
+           n
+             .find(".colorwash")
