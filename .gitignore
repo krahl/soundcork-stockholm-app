@@ -13,6 +13,7 @@ stockholm/
 stockholm*.zip
 Stockholm*.zip
 .env
+config/custom-ca.crt
 
 ### STS ###
 .apt_generated

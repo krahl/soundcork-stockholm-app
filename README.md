@@ -120,6 +120,27 @@ docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
 
 The override restores port publishing and bridge networking for Docker Desktop setups that do not support host networking.
 
+## Custom CA Certificate
+
+If your SoundTouch speakers use HTTPS with a certificate signed by a private or self-signed CA (e.g. a local fritz.box domain), the JVM inside the container will reject the connection with a `PKIX path building failed` error.
+
+To trust a custom CA, place the CA certificate in PEM format at `config/custom-ca.crt` and uncomment the volume mount in `docker-compose.yml`:
+
+```yaml
+- ./config/custom-ca.crt:/app/custom-ca.crt:ro
+```
+
+The entrypoint imports the certificate into the JVM truststore automatically on startup. No rebuild is required — only a container restart.
+
+To extract the certificate from a running speaker or local host:
+
+```shell
+openssl s_client -connect <speaker-host>:443 -showcerts 2>/dev/null </dev/null \
+  | openssl x509 -outform PEM > config/custom-ca.crt
+```
+
+Use this when the server certificate is self-signed. If the certificate is issued by a local CA (e.g. from a FritzBox or internal PKI), download the root CA certificate from your router's admin interface instead and save it as `config/custom-ca.crt`.
+
 ## Local Java Run
 
 You can also run the backend locally with Java 21 and Gradle:
