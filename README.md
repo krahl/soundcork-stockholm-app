@@ -84,6 +84,14 @@ BACKEND_URL=http://soundcork:8000
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
 ```
 
+`AUTH_SERVICE_URL` points to the authentication endpoint of your backend. The `/marge/` path suffix is specific to [soundcork](https://github.com/deborahgu/soundcork). If you use a different Bose SoundTouch cloud replacement such as [Bose-SoundTouch](https://github.com/gesellix/Bose-SoundTouch), omit `/marge/` and set both variables to the same base URL.
+
+`STREAMING_URL` controls where `streaming.bose.com` requests are redirected. It defaults to `BACKEND_URL`. For [soundcork](https://github.com/deborahgu/soundcork), set it to `BACKEND_URL` with a `/marge` suffix (no trailing slash):
+
+```env
+STREAMING_URL=http://soundcork:8000/marge
+```
+
 Optional Marge session values:
 
 ```env
