@@ -12,6 +12,17 @@ if [ -f /app/logback.xml ]; then
   LOGBACK_CONFIG="-Dlogback.configurationFile=/app/logback.xml"
 fi
 
+if [ -f /app/custom-ca.crt ]; then
+  echo "Importing custom CA certificate into JVM truststore."
+  keytool -importcert \
+    -noprompt \
+    -trustcacerts \
+    -alias custom-ca \
+    -file /app/custom-ca.crt \
+    -keystore "${JAVA_HOME}/lib/security/cacerts" \
+    -storepass changeit 2>/dev/null || true
+fi
+
 find_stockholm_zip() {
   if [ -f "${STOCKHOLM_ZIP_DIR}/stockholm.zip" ]; then
     echo "${STOCKHOLM_ZIP_DIR}/stockholm.zip"

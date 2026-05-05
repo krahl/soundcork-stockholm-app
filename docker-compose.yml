@@ -10,6 +10,8 @@ services:
       - ./stockholm_zip:/app/stockholm_zip:ro
       # Optional: Mount custom logging config
       # - ./config/logback.xml:/app/logback.xml:ro
+      # Optional: Mount a custom CA certificate (PEM format) to trust self-signed/private HTTPS endpoints
+      #- ./config/custom-ca.crt:/app/custom-ca.crt:ro
     environment:
       TZ: ${TZ:-Europe/Berlin}
       BACKEND_BIND_IP: ${BACKEND_BIND_IP:-0.0.0.0}
