@@ -22,6 +22,7 @@ This project is under active development. Expect bugs and limitations.
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
 - Persists `getData` / `setData` values under `state/native-state.json`
 - Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
+- Rebuilds `stockholm/json/config.json` from `stockholm/json/backup.json` on container start so URL env changes take effect after restart
 - Reads backend configuration from `config/backend-config.json`
 - Uses backend configuration to control frontend `loggingLevel` / `showDebug`
 - Implements SSDP-based speaker discovery for `getDeviceList`
@@ -81,8 +82,20 @@ TZ=Europe/Berlin
 BACKEND_BIND_IP=0.0.0.0
 BACKEND_PORT=8088
 BACKEND_URL=http://soundcork:8000
+# Optional; defaults to BACKEND_URL/marge when omitted.
+STREAMING_URL=http://soundcork:8000/marge
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
 ```
+
+`AUTH_SERVICE_URL` points to the authentication endpoint of your backend. The `/marge/` path suffix is specific to [soundcork](https://github.com/deborahgu/soundcork). If you use a different Bose SoundTouch cloud replacement such as [Bose-SoundTouch](https://github.com/gesellix/Bose-SoundTouch), omit `/marge/` and set both variables to the same base URL.
+
+`STREAMING_URL` controls where streaming requests are routed. It is optional. When unset, the container defaults it to `BACKEND_URL/marge`, which is the soundcork-friendly behavior. If you use a backend that should not receive the `/marge` suffix, set `STREAMING_URL` explicitly:
+
+```env
+STREAMING_URL=http://soundcork:8000/marge
+```
+
+The startup script always regenerates `stockholm/json/config.json` from `stockholm/json/backup.json`, so any URL environment changes show up after a container restart.
 
 Optional Marge session values:
 

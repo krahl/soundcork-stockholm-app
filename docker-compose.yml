@@ -15,7 +15,9 @@ services:
       BACKEND_BIND_IP: ${BACKEND_BIND_IP:-0.0.0.0}
       BACKEND_PORT: ${BACKEND_PORT:-8088}
       BACKEND_URL: ${BACKEND_URL:-http://soundcork:8000}
-      # The trailing marge/ suffix is important when used against soundcork.
+      # Optional: defaults to BACKEND_URL/marge inside the container when unset.
+      STREAMING_URL: ${STREAMING_URL:-}
+      # The trailing / is important and use marge/ suffix when used against soundcork!
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://soundcork:8000/marge/}
       MARGE_AUTH_TOKEN: ${MARGE_AUTH_TOKEN:-}
       MARGE_ACCOUNT_ID: ${MARGE_ACCOUNT_ID:-}
