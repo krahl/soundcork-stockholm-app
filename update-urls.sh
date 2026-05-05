@@ -18,6 +18,7 @@ jq '.default |= map_values(try (@base64d) catch .)' backup.json \
   -e "s|https://events.api.bosecm.com|${BACKEND_URL}|" \
   -e "s|https://content.api.bose.io|${BACKEND_URL}|" \
   -e "s|https://worldwide.bose.com|${BACKEND_URL}|" \
+  -e "s|https://downloads.bose.com|${BACKEND_URL}|" \
 | jq --arg authSuffix "${AUTH_SERVICE_URL}" '.default.d6 = $authSuffix' \
 | jq '.default |= map_values(@base64)' \
 > config.json
