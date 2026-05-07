@@ -1,7 +1,8 @@
 services:
   backend:
-    build: .
-    image: soundcork-stockholm-app
+    image: ${STOCKHOLM_IMAGE:-ghcr.io/krahl/soundcork-stockholm-app:latest}
+    # To build a local image instead, uncomment the next line.
+    # build: .
     # Host networking keeps SSDP multicast discovery working by default.
     network_mode: host
     volumes:
