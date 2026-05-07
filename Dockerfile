@@ -10,7 +10,7 @@ COPY src/ ./src
 
 RUN gradle :installDist --no-daemon
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
