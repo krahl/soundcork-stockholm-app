@@ -58,7 +58,7 @@ jobs:
 
   publish:
     name: Build and push Docker image
-    if: github.event_name == 'push'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
