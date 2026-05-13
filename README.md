@@ -5,12 +5,11 @@ It can be used as a frontend for the [soundcork](https://github.com/deborahgu/so
 
 This project is under active development. Expect bugs and limitations.
 
-> [!WARNING]
-> Bose says SoundTouch cloud support ends on May 6, 2026. Login against Bose servers already appears unreliable. If you want to this app for dev purposes against the Bose cloud you should use SoundTouch account ID, and credentials like `margeAccountID` and `margeAuthToken` from `%AppData%\SoundTouch\config.ini` Windows SoundTouch app before May 6, 2026.
-
-> [!TIP]
+> [!IMPORTANT]
 > Bose has made SoundTouch technical material available for community tooling, and Stockholm source/archive material is publicly available. We believe using the Stockholm code with this project is permitted.
+>
 > This project does not bundle the Stockholm frontend itself. Please download it from, e.g. the Internet Archive at https://archive.org/download/bose-soundtouch-software-and-firmware/Programs/Interface/ - choose the Stockholm zip file with version `27.0.13-4277-8963611`.
+>
 > After downloading, copy the Stockholm archive into the `stockholm_zip` folder of this project. It will be expanded and patched to run with the backend.
 
 ![Stockholm in Chrome](./docs/images/stockholm.png)
@@ -59,10 +58,16 @@ stockholm_zip/stockholm.zip
 
 The compose file mounts the `stockholm_zip` directory instead of mounting `stockholm.zip` directly. This avoids a Docker Desktop/Windows pitfall where a missing file bind mount can be created as a directory.
 
-3. Start the app:
+3. Start the app from the published image:
 
 ```shell
-docker compose up --build
+docker compose up -d
+```
+
+4. Or build and run a local image from this checkout:
+
+```shell
+docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d
 ```
 
 After starting the backend, open:
@@ -115,10 +120,10 @@ The default compose file uses host networking so SSDP multicast discovery works 
 If you are on Windows or otherwise need bridge networking, use the override file:
 
 ```shell
-docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.windows.yml up --build -d
 ```
 
-The override restores port publishing and bridge networking for Docker Desktop setups that do not support host networking.
+The override restores port publishing and bridge networking for Docker Desktop setups that do not support host networking. The build override can be omitted if you want to run the published `ghcr.io` image instead of a local rebuild.
 
 ## Custom CA Certificate
 
@@ -141,7 +146,11 @@ openssl s_client -connect <speaker-host>:443 -showcerts 2>/dev/null </dev/null \
 
 Use this when the server certificate is self-signed. If the certificate is issued by a local CA (e.g. from a FritzBox or internal PKI), download the root CA certificate from your router's admin interface instead and save it as `config/custom-ca.crt`.
 
-## Local Java Run
+## Local Building
+
+The default `docker-compose.yml` runs the published image from `ghcr.io`, so `docker compose up --build` does not switch you to a local rebuild by itself. Use the build override file when you want Compose to compile the image from this checkout.
+
+### Local Java Run
 
 You can also run the backend locally with Java 21 and Gradle:
 
@@ -149,7 +158,9 @@ You can also run the backend locally with Java 21 and Gradle:
 ./gradlew run
 ```
 
-Note that if you run the service outside of docker then you will need to unzip and patch Stockholm on your own (or run the docker setup first).  See `docker-entrypoint.sh` for details.
+> [!NOTE]
+> If you run the service outside of docker then you will need to unzip and patch Stockholm on your own (or run the docker setup first).
+> See `docker-entrypoint.sh` for details.
 
 To disable frontend debug logging, set `frontendLoggingLevel` to `0` in `config/backend-config.json`.
 

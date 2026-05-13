@@ -1,0 +1,7 @@
+services:
+  backend:
+    # Use this override when you want Compose to build the local image instead
+    # of running the published ghcr.io image from docker-compose.yml.
+    image: ${STOCKHOLM_IMAGE:-soundcork-stockholm-app:local}
+    build:
+      context: .
