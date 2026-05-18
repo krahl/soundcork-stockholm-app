@@ -26,11 +26,11 @@ public final class BackendApplication {
     public static void main(String[] args) throws IOException {
         Path workspaceRoot = resolveWorkspaceRoot();
         Path stockholmRoot = workspaceRoot.resolve("stockholm").normalize();
-        Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
+        Path stateFile = workspaceRoot.resolve("backend").resolve("state").normalize();
         BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         SoundcorkDataService soundcorkDataService = new SoundcorkDataService(workspaceRoot, bridgeService);
-        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService);
+        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService, bridgeService);
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
@@ -74,6 +74,12 @@ public final class BackendApplication {
             return;
         }
         String clientId = clientId(exchange);
+        if (clientId == null) {
+            LOGGER.debug("Rejected {} request to /api/native/appSend", exchange.getRequestMethod());
+            sendText(exchange, 405, "Client Id required", "text/plain");
+            return;
+        }
+        bridgeService.setCurrentClient(clientId);
         String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         LOGGER.debug("Received /api/native/appSend for client '{}'", describeClientId(clientId));
         bridgeService.handleAppSend(clientId, payload);
@@ -88,11 +94,12 @@ public final class BackendApplication {
             return;
         }
         String clientId = clientId(exchange);
+        bridgeService.setCurrentClient(clientId);
         LOGGER.debug("Received /api/native/runQueue for client '{}'", describeClientId(clientId));
         sendText(exchange, 200, bridgeService.runQueue(clientId), "application/json; charset=UTF-8");
     }
 
-    private static String clientId(HttpExchange exchange) {
+    public static String clientId(HttpExchange exchange) {
         String header = exchange.getRequestHeaders().getFirst("X-Stockholm-Client-Id");
         if (header != null && !header.isBlank()) {
             return header;
@@ -257,7 +264,7 @@ public final class BackendApplication {
     }
 
     private static String describeClientId(String clientId) {
-        return clientId == null || clientId.isBlank() ? "default" : clientId;
+        return clientId == null || clientId.isBlank() ? NativeBridgeService.DEFAULT_CLIENT_ID : clientId;
     }
 
     private static Path resolveWorkspaceRoot() {
@@ -288,6 +295,8 @@ public final class BackendApplication {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+          try{
+            soundcorkDataService.getBridgeService().setCurrentClient(NativeBridgeService.DEFAULT_CLIENT_ID);
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
                 LOGGER.debug("Rejected {} request for static path {}", exchange.getRequestMethod(),
                         exchange.getRequestURI().getPath());
@@ -318,6 +327,9 @@ public final class BackendApplication {
             try (OutputStream output = exchange.getResponseBody()) {
                 output.write(bytes);
             }
+          } finally {
+            soundcorkDataService.getBridgeService().clearCurrentClient();
+          }
         }
 
         private Path resolveFile(String rawPath) {

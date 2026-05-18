@@ -18,7 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 final class NativeBridgeService implements AutoCloseable {
-    private static final String DEFAULT_CLIENT_ID = "default";
+    public static final String DEFAULT_CLIENT_ID = "default";
     private static final String UNSUPPORTED = "unsupported";
     private static final String MARGE_AUTH_TOKEN_KEY = "margeAuthToken";
     private static final String MARGE_ACCOUNT_ID_KEY = "margeAccountID";
@@ -27,23 +27,24 @@ final class NativeBridgeService implements AutoCloseable {
     );
     private static final Logger LOGGER = LoggerFactory.getLogger(NativeBridgeService.class);
 
-    private final Path stateFile;
+    private final Path stateFileDirectory;
     private final SsdpDiscoveryService discoveryService;
-    private final ConcurrentMap<String, String> state = new ConcurrentHashMap<>();
+    private ConcurrentMap<String, UserState> stateMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ArrayDeque<Map<String, Object>>> queues = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ThreadLocal<String> currentClientId = ThreadLocal.withInitial(() -> DEFAULT_CLIENT_ID);
 
-    NativeBridgeService(Path stateFile) {
-        this(stateFile, System.getenv());
+    NativeBridgeService(Path stateFileDirectory) throws IOException {
+        this(stateFileDirectory, System.getenv());
     }
 
-    NativeBridgeService(Path stateFile, Map<String, String> environment) {
-        this.stateFile = stateFile;
+    NativeBridgeService(Path stateFileDirectory, Map<String, String> environment) throws IOException {
+        this.stateFileDirectory = stateFileDirectory;
         this.discoveryService = new SsdpDiscoveryService();
-        loadState();
+        loadUserStates();
         seedDefaultConstants();
         seedMargeSessionFromEnvironment(environment);
-        LOGGER.debug("NativeBridgeService initialized with state file {}", stateFile);
+        LOGGER.debug("NativeBridgeService initialized with state file directory {}", stateFileDirectory);
     }
 
     void handleAppSend(String clientId, String payload) {
@@ -78,19 +79,19 @@ final class NativeBridgeService implements AutoCloseable {
                     String name = stringValue(params.get("name"));
                     String value = params.containsKey("value") ? stringifyScalar(params.get("value")) : "";
                     if (name != null && !name.isBlank()) {
-                        state.put(name, value);
+                        currentUserState().put(name, value);
                         LOGGER.debug("Updated persisted state key '{}' for client '{}'", name, queueId);
                         persistState();
                     }
                 }
-                case "getData" -> enqueueCallbackResult(queueId, id, state.getOrDefault(stringValue(params.get("name")), ""), "");
+                case "getData" -> enqueueCallbackResult(queueId, id, currentUserState().getOrDefault(stringValue(params.get("name")), ""), "");
                 case "getLanStatus" -> enqueueCallbackResult(queueId, id, Boolean.TRUE, null);
                 case "getTimeZone" -> enqueueCallbackResult(queueId, id, createTimeZoneInfo(), "");
                 case "getLegalDocPath" -> enqueueCallbackResult(queueId, id, getLegalDocPath(params), null);
                 case "getConstant" -> enqueueCallbackResult(queueId, id, getConstant(params), "");
                 case "canPerformAutoAPSetup" -> enqueueCallbackResult(queueId, id, createAutoApSetupInfo(), "");
                 case "getDeviceList" -> submitAsync(queueId, id, () -> {
-                    String accountId = blankToNull(state.get("margeAccountID"));
+                    String accountId = blankToNull(currentUserState().get("margeAccountID"));
                     LOGGER.debug("Starting renderer discovery for client '{}'", queueId);
                     List<Map<String, Object>> devices = discoveryService.discoverRenderers(
                             accountId,
@@ -140,7 +141,7 @@ final class NativeBridgeService implements AutoCloseable {
         if (name == null || name.isBlank()) {
             return null;
         }
-        return state.get(name);
+        return currentUserState().get(name);
     }
 
     void putStateValue(String name, String value) {
@@ -161,7 +162,7 @@ final class NativeBridgeService implements AutoCloseable {
                 continue;
             }
             String value = entry.getValue() == null ? "" : entry.getValue();
-            String previous = state.put(name, value);
+            String previous = currentUserState().put(name, value);
             if (!value.equals(previous)) {
                 changed = true;
             }
@@ -205,10 +206,13 @@ final class NativeBridgeService implements AutoCloseable {
     private void submitAsync(String clientId, Object id, Runnable task) {
         executor.submit(() -> {
             try {
+                setCurrentClient(clientId);
                 task.run();
             } catch (RuntimeException exception) {
                 LOGGER.warn("Asynchronous backend task failed for client '{}'", clientId, exception);
                 enqueueCallbackError(clientId, id, exception.getMessage() == null ? "bridge_error" : exception.getMessage());
+            } finally {
+              clearCurrentClient();
             }
         });
     }
@@ -237,14 +241,14 @@ final class NativeBridgeService implements AutoCloseable {
         if (name == null) {
             return "";
         }
-        return state.getOrDefault("constant." + name, DEFAULT_CONSTANTS.getOrDefault(name, ""));
+        return currentUserState().getOrDefault("constant." + name, DEFAULT_CONSTANTS.getOrDefault(name, ""));
     }
 
     private void seedDefaultConstants() {
         boolean updated = false;
         for (Map.Entry<String, String> entry : DEFAULT_CONSTANTS.entrySet()) {
             String key = "constant." + entry.getKey();
-            if (state.putIfAbsent(key, entry.getValue()) == null) {
+            if (currentUserState().putIfAbsent(key, entry.getValue()) == null) {
                 updated = true;
             }
         }
@@ -289,30 +293,77 @@ final class NativeBridgeService implements AutoCloseable {
         return "legal/" + type + "_" + safeLang + ".txt";
     }
 
-    private void loadState() {
-        if (!Files.exists(stateFile)) {
-            LOGGER.debug("No persisted native bridge state found at {}", stateFile);
+    private void loadUserStates() throws IOException {
+        if (!Files.isDirectory(stateFileDirectory)) {
+            LOGGER.debug("No persisted native bridge state found at {}", stateFileDirectory);
             return;
         }
-        try {
-            Object parsed = SimpleJson.parse(Files.readString(stateFile, StandardCharsets.UTF_8));
-            Map<String, Object> object = SimpleJson.asObject(parsed);
-            for (Map.Entry<String, Object> entry : object.entrySet()) {
-                state.put(entry.getKey(), stringifyScalar(entry.getValue()));
+
+        Files.list(stateFileDirectory).forEach((Path stateFile) -> {
+            String filename  = stateFile.getFileName().toString();
+
+            if (filename.endsWith(".json")) {
+                String clientId = filename.replace(".json", "");
+                UserState state = new UserState(clientId);
+                try {
+                    Object parsed = SimpleJson.parse(Files.readString(stateFile, StandardCharsets.UTF_8));
+                    Map<String, Object> object = SimpleJson.asObject(parsed);
+                    for (Map.Entry<String, Object> entry : object.entrySet()) {
+                        state.put(entry.getKey(), stringifyScalar(entry.getValue()));
+                    }
+                    LOGGER.debug("Loaded {} persisted state entries from {}", state.size(), stateFile);
+                } catch (IOException | RuntimeException exception) {
+                    LOGGER.warn("Failed to load persisted native bridge state from {}", stateFile, exception);
+                }
+                stateMap.put(clientId, state);
             }
-            LOGGER.debug("Loaded {} persisted state entries from {}", state.size(), stateFile);
-        } catch (IOException | RuntimeException exception) {
-            LOGGER.warn("Failed to load persisted native bridge state from {}", stateFile, exception);
-        }
+        });
+    }
+
+    public UserState currentUserState() {
+      String clientId = currentClientId.get();
+      synchronized(this) {
+          UserState currentUserState = stateMap.get(clientId);
+          if (currentUserState == null) {
+              LOGGER.info("creating new user state for client {}", clientId);
+              currentUserState = new UserState(clientId);
+              if (! DEFAULT_CLIENT_ID.equals(clientId)) {
+                UserState defaultState = stateMap.get(DEFAULT_CLIENT_ID);
+                if (defaultState != null) {
+                  currentUserState.putAll(defaultState);
+                }
+              }
+              stateMap.put(clientId, currentUserState);
+            }
+          return currentUserState;
+      }
+    }
+
+    public void setCurrentClient(String clientId) {
+      if (clientId == null) {
+        clientId = DEFAULT_CLIENT_ID;
+      }
+      currentClientId.set(clientId);
+    }
+
+    public void clearCurrentClient() {
+      setCurrentClient(DEFAULT_CLIENT_ID);
     }
 
     private void persistState() {
-        try {
-            Files.createDirectories(stateFile.getParent());
-            Files.writeString(stateFile, SimpleJson.stringify(new LinkedHashMap<>(state)), StandardCharsets.UTF_8);
-            LOGGER.debug("Persisted {} state entries to {}", state.size(), stateFile);
-        } catch (IOException exception) {
-            LOGGER.warn("Failed to persist native bridge state to {}", stateFile, exception);
+        synchronized(this) {
+            UserState currentState = currentUserState();
+            Path stateFile = stateFileDirectory.resolve(currentState.getClientId() + ".json");
+            try {
+               Files.createDirectories(stateFileDirectory.getParent());
+                if (! Files.exists(stateFile)) {
+                    Files.createFile(stateFile);
+                }
+                Files.writeString(stateFile, SimpleJson.stringify(new LinkedHashMap<>(currentState)), StandardCharsets.UTF_8);
+                LOGGER.debug("Persisted {} state entries to {}", currentState.size(), stateFile);
+            } catch (IOException exception) {
+                LOGGER.warn("Failed to persist native bridge state to {}", stateFile, exception);
+            }
         }
     }
 
@@ -359,4 +410,17 @@ final class NativeBridgeService implements AutoCloseable {
         LOGGER.debug("Shutting down NativeBridgeService executor");
         executor.shutdownNow();
     }
+
+    // simplifies things
+    public static class UserState extends ConcurrentHashMap<String, String> {
+      String clientId;
+      public UserState(String clientId) {
+        this.clientId = clientId;
+      }
+      public String getClientId() {
+        return clientId;
+      }
+    }
+
+
 }
