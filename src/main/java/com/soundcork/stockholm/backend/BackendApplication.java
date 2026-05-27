@@ -13,12 +13,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class BackendApplication {
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendApplication.class);
+    private static final String CLIENT_ID_COOKIE = "stockholmClientId";
+    private static final int CLIENT_ID_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
     private BackendApplication() {
     }
@@ -73,7 +76,7 @@ public final class BackendApplication {
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = clientId(exchange);
+        String clientId = ensureClientId(exchange);
         String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         LOGGER.debug("Received /api/native/appSend for client '{}'", describeClientId(clientId));
         bridgeService.handleAppSend(clientId, payload);
@@ -87,27 +90,92 @@ public final class BackendApplication {
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = clientId(exchange);
+        String clientId = ensureClientId(exchange);
         LOGGER.debug("Received /api/native/runQueue for client '{}'", describeClientId(clientId));
         sendText(exchange, 200, bridgeService.runQueue(clientId), "application/json; charset=UTF-8");
     }
 
-    private static String clientId(HttpExchange exchange) {
-        String header = exchange.getRequestHeaders().getFirst("X-Stockholm-Client-Id");
-        if (header != null && !header.isBlank()) {
+    static String ensureClientId(HttpExchange exchange) {
+        String clientId = clientId(exchange);
+        if (clientId == null) {
+            clientId = "stockholm-" + UUID.randomUUID();
+        }
+        String cookieClientId = clientIdCookie(exchange);
+        if (!clientId.equals(cookieClientId)) {
+            exchange.getResponseHeaders().add("Set-Cookie",
+                    CLIENT_ID_COOKIE + "=" + clientId + "; Max-Age=" + CLIENT_ID_COOKIE_MAX_AGE_SECONDS
+                            + "; Path=/; SameSite=Lax");
+        }
+        return clientId;
+    }
+
+    static String clientId(HttpExchange exchange) {
+        String header = normalizeClientId(exchange.getRequestHeaders().getFirst("X-Stockholm-Client-Id"));
+        if (header != null) {
             return header;
         }
         String query = exchange.getRequestURI().getRawQuery();
-        if (query == null || query.isBlank()) {
-            return null;
-        }
-        for (String part : query.split("&")) {
-            int separator = part.indexOf('=');
-            if (separator > 0 && "clientId".equals(part.substring(0, separator))) {
-                return URLDecoder.decode(part.substring(separator + 1), StandardCharsets.UTF_8);
+        if (query != null && !query.isBlank()) {
+            for (String part : query.split("&")) {
+                int separator = part.indexOf('=');
+                if (separator > 0 && "clientId".equals(part.substring(0, separator))) {
+                    String queryClientId = normalizeClientId(urlDecode(part.substring(separator + 1)));
+                    if (queryClientId != null) {
+                        return queryClientId;
+                    }
+                }
             }
         }
+        return clientIdCookie(exchange);
+    }
+
+    private static String clientIdCookie(HttpExchange exchange) {
+        String cookieHeader = exchange.getRequestHeaders().getFirst("Cookie");
+        if (cookieHeader == null || cookieHeader.isBlank()) {
+            return null;
+        }
+        for (String cookie : cookieHeader.split(";")) {
+            String trimmed = cookie.trim();
+            int separator = trimmed.indexOf('=');
+            if (separator <= 0 || !CLIENT_ID_COOKIE.equals(trimmed.substring(0, separator))) {
+                continue;
+            }
+            return normalizeClientId(urlDecode(trimmed.substring(separator + 1)));
+        }
         return null;
+    }
+
+    private static String urlDecode(String value) {
+        try {
+            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            LOGGER.debug("Ignoring malformed client id encoding", exception);
+            return null;
+        }
+    }
+
+    private static String normalizeClientId(String clientId) {
+        if (clientId == null || clientId.isBlank()) {
+            return null;
+        }
+        String trimmed = clientId.trim();
+        if (trimmed.length() > 128) {
+            return null;
+        }
+        for (int index = 0; index < trimmed.length(); index++) {
+            char current = trimmed.charAt(index);
+            boolean allowed = current >= 'a' && current <= 'z'
+                    || current >= 'A' && current <= 'Z'
+                    || current >= '0' && current <= '9'
+                    || current == '.'
+                    || current == '_'
+                    || current == '~'
+                    || current == '-';
+            if (!allowed) {
+                return null;
+            }
+        }
+        return trimmed;
     }
 
     static void sendText(HttpExchange exchange, int status, String body, String contentType) throws IOException {
@@ -127,18 +195,20 @@ public final class BackendApplication {
             return;
         }
         var info = new java.util.LinkedHashMap<String, Object>();
-        info.put("authServer", soundcorkDataService.authServer());
-        info.put("guid", soundcorkDataService.guid());
-        info.put("nativeFrameVersion", soundcorkDataService.nativeFrameVersion());
-        info.put("fullNativeVersion", soundcorkDataService.fullNativeVersion());
-        info.put("currentMargeUrl", soundcorkDataService.currentMargeUrl());
-        info.put("overrideMargeUrl", soundcorkDataService.overrideMargeUrl());
-        info.put("currentUpdateUrl", soundcorkDataService.currentUpdateUrl());
+        String clientId = ensureClientId(exchange);
+        info.put("clientId", clientId);
+        info.put("authServer", soundcorkDataService.authServer(clientId));
+        info.put("guid", soundcorkDataService.guid(clientId));
+        info.put("nativeFrameVersion", soundcorkDataService.nativeFrameVersion(clientId));
+        info.put("fullNativeVersion", soundcorkDataService.fullNativeVersion(clientId));
+        info.put("currentMargeUrl", soundcorkDataService.currentMargeUrl(clientId));
+        info.put("overrideMargeUrl", soundcorkDataService.overrideMargeUrl(clientId));
+        info.put("currentUpdateUrl", soundcorkDataService.currentUpdateUrl(clientId));
         info.put("bmxApiKey", soundcorkDataService.bmxApiKey());
         info.put("margeServerKey", soundcorkDataService.margeServerKey());
         info.put("margeServerKeyHeader", soundcorkDataService.margeServerKeyHeader());
-        info.put("margeAuthToken", soundcorkDataService.margeAuthToken() != null ? "<present>" : null);
-        info.put("margeAccountID", bridgeService.getStateValue("margeAccountID"));
+        info.put("margeAuthToken", soundcorkDataService.margeAuthToken(clientId) != null ? "<present>" : null);
+        info.put("margeAccountID", bridgeService.getStateValue(clientId, "margeAccountID"));
         info.put("defaultClientType", soundcorkDataService.defaultClientType());
         info.put("streamingMediaType", soundcorkDataService.streamingMediaType());
         info.put("boseAppVersion", soundcorkDataService.soundcorkAppVersion());
@@ -288,6 +358,7 @@ public final class BackendApplication {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            String clientId = ensureClientId(exchange);
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
                 LOGGER.debug("Rejected {} request for static path {}", exchange.getRequestMethod(),
                         exchange.getRequestURI().getPath());
@@ -304,7 +375,7 @@ public final class BackendApplication {
 
             byte[] bytes = Files.readAllBytes(file);
             if (shouldInjectBrowserBootstrap(file)) {
-                bytes = injectBrowserBootstrap(bytes);
+                bytes = injectBrowserBootstrap(clientId, bytes);
             }
             Headers headers = exchange.getResponseHeaders();
             applyFrontendLoggingCookie(headers);
@@ -357,7 +428,7 @@ public final class BackendApplication {
             return "index.html".equals(relativePath) || "setup/index.html".equals(relativePath);
         }
 
-        private byte[] injectBrowserBootstrap(byte[] originalBytes) {
+        private byte[] injectBrowserBootstrap(String clientId, byte[] originalBytes) {
             String html = new String(originalBytes, StandardCharsets.UTF_8);
             if (html.contains("window.StockholmBrowserBootstrap")) {
                 return originalBytes;
@@ -367,13 +438,13 @@ public final class BackendApplication {
                 return originalBytes;
             }
             String injected = html.substring(0, headEnd)
-                    + browserBootstrapScript()
+                    + browserBootstrapScript(clientId)
                     + html.substring(headEnd);
             return injected.getBytes(StandardCharsets.UTF_8);
         }
 
-        private String browserBootstrapScript() {
-            String bootstrapJson = SimpleJson.stringify(soundcorkDataService.browserBootstrapPayload());
+        private String browserBootstrapScript(String clientId) {
+            String bootstrapJson = SimpleJson.stringify(soundcorkDataService.browserBootstrapPayload(clientId));
             return """
                     <script>
                     (function () {
@@ -402,6 +473,15 @@ public final class BackendApplication {
                                 }
                             });
                             return config;
+                        }
+
+                        if (bootstrap.clientId) {
+                            try {
+                                window.localStorage.setItem("stockholmBridgeClientId", bootstrap.clientId);
+                            } catch (ignored) {
+                            }
+                            document.cookie = "stockholmClientId=" + encodeURIComponent(bootstrap.clientId)
+                                    + "; Max-Age=31536000; Path=/; SameSite=Lax";
                         }
 
                         var originalGetURLParams = window.getURLParams;

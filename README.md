@@ -19,7 +19,7 @@ This project is under active development. Expect bugs and limitations.
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
-- Persists `getData` / `setData` values under `state/native-state.json`
+- Persists default `getData` / `setData` values under `state/native-state.json` and browser-specific values under `state/clients/`
 - Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
 - Rebuilds `stockholm/json/config.json` from `stockholm/json/backup.json` on container start so URL env changes take effect after restart
 - Reads backend configuration from `config/backend-config.json`
@@ -111,7 +111,7 @@ MARGE_ACCOUNT_ID=
 
 `MARGE_AUTH_TOKEN` is the auth string stored by the Stockholm/SoundTouch flow. The backend also accepts `margeAuthToken` and `margeAccountID` aliases.
 
-If these variables are set, they overwrite the same keys in `state/native-state.json` on startup and are persisted there. If they are absent, values in `state/native-state.json` will be used if existing. Treat both `.env` and `state/native-state.json` as sensitive local files.
+If these variables are set, they overwrite the same keys in the default state file, `state/native-state.json`, on startup and are persisted there. Browser sessions keep their own state under `state/clients/` after they receive a `stockholmClientId` cookie, so different browsers or devices can log into different accounts. If the variables are absent, existing persisted values will be used. Treat both `.env` and the `state/` directory as sensitive local data.
 
 ## Networking
 

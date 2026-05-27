@@ -61,12 +61,16 @@ final class SoundcorkDataService {
         this.overrideKilo = stringValue(loadObject(overrideFile).get("kilo"));
         this.margeServerKey = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d10")));
         this.margeServerKeyHeader = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d13")));
-        seedBrowserRuntimeState();
+        seedBrowserRuntimeState(NativeBridgeService.DEFAULT_CLIENT_ID);
         LOGGER.debug("Loaded SoundcorkDataService using config={} override={}", configFile, overrideFile);
     }
 
     String authServer() {
-        return normalizeAuthServer(bridgeService.getStateValue("authServer"));
+        return authServer(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String authServer(String clientId) {
+        return normalizeAuthServer(bridgeService.getStateValue(clientId, "authServer"));
     }
 
     String soundcorkAppVersion() {
@@ -105,30 +109,46 @@ final class SoundcorkDataService {
     }
 
     String nativeFrameVersion() {
+        return nativeFrameVersion(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String nativeFrameVersion(String clientId) {
         return firstNonBlank(
-                blankToNull(bridgeService.getStateValue("nativeFrameVersion")),
-                extractVersionPrefix(bridgeService.getStateValue("frame_version")),
-                shortNativeVersion());
+                blankToNull(bridgeService.getStateValue(clientId, "nativeFrameVersion")),
+                extractVersionPrefix(bridgeService.getStateValue(clientId, "frame_version")),
+                shortNativeVersion(clientId));
     }
 
     String fullNativeVersion() {
+        return fullNativeVersion(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String fullNativeVersion(String clientId) {
         return firstNonBlank(
-                blankToNull(bridgeService.getStateValue("frame_version")),
+                blankToNull(bridgeService.getStateValue(clientId, "frame_version")),
                 blankToNull(soundcorkAppVersion),
-                shortNativeVersion());
+                shortNativeVersion(clientId));
     }
 
     String shortNativeVersion() {
+        return shortNativeVersion(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String shortNativeVersion(String clientId) {
         return firstNonBlank(
-                extractVersionPrefix(bridgeService.getStateValue("nativeFrameVersion")),
-                extractVersionPrefix(bridgeService.getStateValue("frame_version")),
+                extractVersionPrefix(bridgeService.getStateValue(clientId, "nativeFrameVersion")),
+                extractVersionPrefix(bridgeService.getStateValue(clientId, "frame_version")),
                 extractVersionPrefix(soundcorkAppVersion));
     }
 
     String guid() {
+        return guid(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String guid(String clientId) {
         return firstNonBlank(
-                blankToNull(bridgeService.getStateValue("guid")),
-                blankToNull(bridgeService.getStateValue("deviceGuid")));
+                blankToNull(bridgeService.getStateValue(clientId, "guid")),
+                blankToNull(bridgeService.getStateValue(clientId, "deviceGuid")));
     }
 
     String margeServerKey() {
@@ -140,16 +160,28 @@ final class SoundcorkDataService {
     }
 
     String overrideMargeUrl() {
-        return normalizeBaseUrl(bridgeService.getStateValue("overrideMargeURL"));
+        return overrideMargeUrl(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String overrideMargeUrl(String clientId) {
+        return normalizeBaseUrl(bridgeService.getStateValue(clientId, "overrideMargeURL"));
     }
 
     String currentMargeUrl() {
-        return firstNonBlank(overrideMargeUrl(), defaultMargeUrl);
+        return currentMargeUrl(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String currentMargeUrl(String clientId) {
+        return firstNonBlank(overrideMargeUrl(clientId), defaultMargeUrl);
     }
 
     String currentUpdateUrl() {
+        return currentUpdateUrl(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String currentUpdateUrl(String clientId) {
         return firstNonBlank(
-                normalizeBaseUrl(bridgeService.getStateValue("overrideUpdateURL")),
+                normalizeBaseUrl(bridgeService.getStateValue(clientId, "overrideUpdateURL")),
                 defaultUpdateUrl);
     }
 
@@ -158,20 +190,34 @@ final class SoundcorkDataService {
     }
 
     String margeAuthToken() {
-        return bridgeService.getStateValue("margeAuthToken");
+        return margeAuthToken(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    String margeAuthToken(String clientId) {
+        return bridgeService.getStateValue(clientId, "margeAuthToken");
     }
 
     Map<String, Object> browserBootstrapPayload() {
+        return browserBootstrapPayload(NativeBridgeService.DEFAULT_CLIENT_ID);
+    }
+
+    Map<String, Object> browserBootstrapPayload(String clientId) {
+        seedBrowserRuntimeState(clientId);
         LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
-        payload.put("authServer", authServer());
-        payload.put("guid", guid());
-        payload.put("nativeVersion", fullNativeVersion());
+        payload.put("authServer", authServer(clientId));
+        payload.put("clientId", clientId);
+        payload.put("guid", guid(clientId));
+        payload.put("nativeVersion", fullNativeVersion(clientId));
         // this may be used at some point but works fine empty
         payload.put("frameConfig", new HashMap<String, String>());
         return payload;
     }
 
     void storeMargeSession(String accountId, String authToken) {
+        storeMargeSession(NativeBridgeService.DEFAULT_CLIENT_ID, accountId, authToken);
+    }
+
+    void storeMargeSession(String clientId, String accountId, String authToken) {
         LinkedHashMap<String, String> updates = new LinkedHashMap<>();
         if (accountId != null && !accountId.isBlank()) {
             updates.put("margeAccountID", accountId);
@@ -179,17 +225,25 @@ final class SoundcorkDataService {
         if (authToken != null && !authToken.isBlank()) {
             updates.put("margeAuthToken", authToken);
         }
-        bridgeService.putStateValues(updates);
+        bridgeService.putStateValues(clientId, updates);
     }
 
     void storeMargeAuthToken(String authToken) {
+        storeMargeAuthToken(NativeBridgeService.DEFAULT_CLIENT_ID, authToken);
+    }
+
+    void storeMargeAuthToken(String clientId, String authToken) {
         if (authToken == null || authToken.isBlank()) {
             return;
         }
-        bridgeService.putStateValue("margeAuthToken", authToken);
+        bridgeService.putStateValue(clientId, "margeAuthToken", authToken);
     }
 
     void storeOverrideUrls(String streamingUrl, String updateUrl) {
+        storeOverrideUrls(NativeBridgeService.DEFAULT_CLIENT_ID, streamingUrl, updateUrl);
+    }
+
+    void storeOverrideUrls(String clientId, String streamingUrl, String updateUrl) {
         LinkedHashMap<String, String> updates = new LinkedHashMap<>();
         String normalizedStreamingUrl = normalizeBaseUrl(streamingUrl);
         String normalizedUpdateUrl = normalizeBaseUrl(updateUrl);
@@ -199,14 +253,18 @@ final class SoundcorkDataService {
         if (normalizedUpdateUrl != null) {
             updates.put("overrideUpdateURL", normalizedUpdateUrl);
         }
-        bridgeService.putStateValues(updates);
+        bridgeService.putStateValues(clientId, updates);
     }
 
     URI overrideTarget(URI target) {
+        return overrideTarget(NativeBridgeService.DEFAULT_CLIENT_ID, target);
+    }
+
+    URI overrideTarget(String clientId, URI target) {
         if (target == null || !isMargeTarget(target.getHost(), target.getPath())) {
             return target;
         }
-        String override = overrideMargeUrl();
+        String override = overrideMargeUrl(clientId);
         if (override == null) {
             return target;
         }
@@ -263,11 +321,11 @@ final class SoundcorkDataService {
         return normalizedHost.endsWith(".bose.com") || normalizedHost.endsWith(".apigee.net");
     }
 
-    private void seedBrowserRuntimeState() {
+    void seedBrowserRuntimeState(String clientId) {
         LinkedHashMap<String, String> updates = new LinkedHashMap<>();
-        String existingGuid = guid();
-        String persistedGuid = blankToNull(bridgeService.getStateValue("guid"));
-        String persistedDeviceGuid = blankToNull(bridgeService.getStateValue("deviceGuid"));
+        String existingGuid = guid(clientId);
+        String persistedGuid = blankToNull(bridgeService.getStateValue(clientId, "guid"));
+        String persistedDeviceGuid = blankToNull(bridgeService.getStateValue(clientId, "deviceGuid"));
         if (existingGuid == null) {
             existingGuid = UUID.randomUUID().toString().replace("-", "");
         }
@@ -277,18 +335,18 @@ final class SoundcorkDataService {
         if (persistedDeviceGuid == null) {
             updates.put("deviceGuid", existingGuid);
         }
-        String shortVersion = shortNativeVersion();
-        if (blankToNull(bridgeService.getStateValue("nativeFrameVersion")) == null && shortVersion != null) {
+        String shortVersion = shortNativeVersion(clientId);
+        if (blankToNull(bridgeService.getStateValue(clientId, "nativeFrameVersion")) == null && shortVersion != null) {
             updates.put("nativeFrameVersion", shortVersion);
         }
-        String fullVersion = firstNonBlank(blankToNull(bridgeService.getStateValue("frame_version")), fullNativeVersion());
-        if (blankToNull(bridgeService.getStateValue("frame_version")) == null && fullVersion != null) {
+        String fullVersion = firstNonBlank(blankToNull(bridgeService.getStateValue(clientId, "frame_version")), fullNativeVersion(clientId));
+        if (blankToNull(bridgeService.getStateValue(clientId, "frame_version")) == null && fullVersion != null) {
             updates.put("frame_version", fullVersion);
         }
-        if (blankToNull(bridgeService.getStateValue("authServer")) == null) {
+        if (blankToNull(bridgeService.getStateValue(clientId, "authServer")) == null) {
             updates.put("authServer", DEFAULT_AUTH_SERVER);
         }
-        bridgeService.putStateValues(updates);
+        bridgeService.putStateValues(clientId, updates);
     }
 
 

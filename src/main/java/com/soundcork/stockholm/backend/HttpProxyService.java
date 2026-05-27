@@ -97,6 +97,8 @@ final class HttpProxyService {
     }
 
     void handle(HttpExchange exchange) throws IOException {
+        String clientId = BackendApplication.ensureClientId(exchange);
+        soundcorkDataService.seedBrowserRuntimeState(clientId);
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
         String encodedTarget = queryParam(exchange, "url");
         if (LOGGER.isTraceEnabled()) {
@@ -136,7 +138,7 @@ final class HttpProxyService {
 
         byte[] requestBody = exchange.getRequestBody().readAllBytes();
         try {
-            RequestOutcome outcome = executeWithCloudHandling(method, exchange.getRequestHeaders(), target, requestBody);
+            RequestOutcome outcome = executeWithCloudHandling(clientId, method, exchange.getRequestHeaders(), target, requestBody);
             relayResponse(exchange, method, outcome.response());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -269,20 +271,21 @@ final class HttpProxyService {
         return HttpRequest.BodyPublishers.ofByteArray(requestBody);
     }
 
-    private RequestOutcome executeWithCloudHandling(String method, Headers requestHeaders, URI target, byte[] requestBody)
+    private RequestOutcome executeWithCloudHandling(String clientId, String method, Headers requestHeaders, URI target, byte[] requestBody)
             throws IOException, InterruptedException {
-        RequestOutcome outcome = executeRequest(method, requestHeaders, target, requestBody);
+        RequestOutcome outcome = executeRequest(clientId, method, requestHeaders, target, requestBody);
 
         if (isLoginRequest(method, outcome.target())) {
-            outcome = retryLoginWithEnvironmentIfNeeded(method, requestHeaders, outcome, requestBody);
-            captureSuccessfulLogin(outcome.response());
+            outcome = retryLoginWithEnvironmentIfNeeded(clientId, method, requestHeaders, outcome, requestBody);
+            captureSuccessfulLogin(clientId, outcome.response());
         }
 
-        captureRefreshedAuthToken(outcome.target(), outcome.response());
+        captureRefreshedAuthToken(clientId, outcome.target(), outcome.response());
         return outcome;
     }
 
     private RequestOutcome retryLoginWithEnvironmentIfNeeded(
+            String clientId,
             String method,
             Headers requestHeaders,
             RequestOutcome outcome,
@@ -297,13 +300,13 @@ final class HttpProxyService {
             return outcome;
         }
 
-        SoundcorkCloudXml.EnvironmentInfo environment = fetchEnvironment(requestHeaders, outcome.target(), credentials);
+        SoundcorkCloudXml.EnvironmentInfo environment = fetchEnvironment(clientId, requestHeaders, outcome.target(), credentials);
         if (environment == null || environment.streamingUrl() == null || environment.streamingUrl().isBlank()) {
             LOGGER.debug("Cannot retry login after 4033 because no valid environment payload was returned");
             return outcome;
         }
 
-        soundcorkDataService.storeOverrideUrls(environment.streamingUrl(), environment.updateUrl());
+        soundcorkDataService.storeOverrideUrls(clientId, environment.streamingUrl(), environment.updateUrl());
         URI retryTarget = soundcorkDataService.buildUriFromBase(environment.streamingUrl(), outcome.target().getPath(), outcome.target().getQuery());
         if (retryTarget == null) {
             LOGGER.debug("Cannot retry login after 4033 because retry target could not be built");
@@ -311,10 +314,11 @@ final class HttpProxyService {
         }
 
         LOGGER.info("Retrying login against switched environment {}", retryTarget);
-        return executeRequest(method, requestHeaders, retryTarget, requestBody);
+        return executeRequest(clientId, method, requestHeaders, retryTarget, requestBody);
     }
 
     private SoundcorkCloudXml.EnvironmentInfo fetchEnvironment(
+            String clientId,
             Headers requestHeaders,
             URI loginTarget,
             SoundcorkCloudXml.LoginCredentials credentials) throws IOException, InterruptedException {
@@ -330,7 +334,7 @@ final class HttpProxyService {
 
         Headers environmentHeaders = cloneHeaders(requestHeaders);
         environmentHeaders.set("Authorization", basicAuth(credentials));
-        RequestOutcome environmentOutcome = executeRequest("GET", environmentHeaders, environmentTarget, new byte[0]);
+        RequestOutcome environmentOutcome = executeRequest(clientId, "GET", environmentHeaders, environmentTarget, new byte[0]);
         if (environmentOutcome.response().statusCode() != 200) {
             LOGGER.debug("Environment lookup for login returned HTTP {}", environmentOutcome.response().statusCode());
             return null;
@@ -350,14 +354,14 @@ final class HttpProxyService {
         return path.substring(0, streamingIndex);
     }
 
-    private RequestOutcome executeRequest(String method, Headers requestHeaders, URI target, byte[] requestBody)
+    private RequestOutcome executeRequest(String clientId, String method, Headers requestHeaders, URI target, byte[] requestBody)
             throws IOException, InterruptedException {
-        URI effectiveTarget = soundcorkDataService.overrideTarget(target);
+        URI effectiveTarget = soundcorkDataService.overrideTarget(clientId, target);
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(effectiveTarget)
                 .timeout(REQUEST_TIMEOUT)
                 .method(method, bodyPublisher(method, requestBody));
         HeaderCopy requestHeaderCopy = copyRequestHeaders(requestHeaders, requestBuilder);
-        Map<String, List<String>> backendInjectedHeaders = applyBackendHeaders(requestHeaders, effectiveTarget, requestBuilder);
+        Map<String, List<String>> backendInjectedHeaders = applyBackendHeaders(clientId, requestHeaders, effectiveTarget, requestBuilder);
 
         LOGGER.debug("Proxying {} request to {}", method, effectiveTarget);
         if (LOGGER.isTraceEnabled()) {
@@ -408,6 +412,7 @@ final class HttpProxyService {
     }
 
     private Map<String, List<String>> applyBackendHeaders(
+            String clientId,
             Headers requestHeaders,
             URI target,
             HttpRequest.Builder requestBuilder) {
@@ -425,8 +430,8 @@ final class HttpProxyService {
             injectIfMissing(requestHeaders, requestBuilder, injected, "Accept", mediaType);
             injectIfMissing(requestHeaders, requestBuilder, injected, "Content-Type", mediaType);
             injectIfMissing(requestHeaders, requestBuilder, injected, "ClientType", soundcorkDataService.defaultClientType());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "GUID", soundcorkDataService.guid());
-            injectIfMissing(requestHeaders, requestBuilder, injected, "version_NativeFrameVersion", soundcorkDataService.nativeFrameVersion());
+            injectIfMissing(requestHeaders, requestBuilder, injected, "GUID", soundcorkDataService.guid(clientId));
+            injectIfMissing(requestHeaders, requestBuilder, injected, "version_NativeFrameVersion", soundcorkDataService.nativeFrameVersion(clientId));
             injectIfMissing(requestHeaders, requestBuilder, injected, "version_StockholmVersion", soundcorkDataService.soundcorkAppVersion());
             injectIfMissing(requestHeaders, requestBuilder, injected, "version_ProtocolVersion", soundcorkDataService.protocolVersion());
             if (soundcorkDataService.margeServerKeyHeader() != null) {
@@ -438,7 +443,7 @@ final class HttpProxyService {
                         soundcorkDataService.margeServerKey());
             }
             if (shouldInjectStoredAuth(path)) {
-                injectIfMissing(requestHeaders, requestBuilder, injected, "Authorization", soundcorkDataService.margeAuthToken());
+                injectIfMissing(requestHeaders, requestBuilder, injected, "Authorization", soundcorkDataService.margeAuthToken(clientId));
             }
         }
 
@@ -508,7 +513,7 @@ final class HttpProxyService {
                 && target.getPath().toLowerCase(Locale.ROOT).endsWith("/streaming/account/login");
     }
 
-    private void captureSuccessfulLogin(HttpResponse<byte[]> response) {
+    private void captureSuccessfulLogin(String clientId, HttpResponse<byte[]> response) {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             return;
         }
@@ -517,16 +522,16 @@ final class HttpProxyService {
         if ((accountId == null || accountId.isBlank()) && (credentials == null || credentials.isBlank())) {
             return;
         }
-        soundcorkDataService.storeMargeSession(accountId, credentials);
+        soundcorkDataService.storeMargeSession(clientId, accountId, credentials);
     }
 
-    private void captureRefreshedAuthToken(URI target, HttpResponse<byte[]> response) {
+    private void captureRefreshedAuthToken(String clientId, URI target, HttpResponse<byte[]> response) {
         if (!soundcorkDataService.isMargeTarget(target.getHost(), target.getPath())) {
             return;
         }
         String refreshedToken = firstHeaderValue(response.headers(), "Refresh");
         if (refreshedToken != null && !refreshedToken.isBlank()) {
-            soundcorkDataService.storeMargeAuthToken(refreshedToken);
+            soundcorkDataService.storeMargeAuthToken(clientId, refreshedToken);
         }
     }
 
