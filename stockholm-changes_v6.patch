@@ -1,0 +1,235 @@
+diff --git a/stockholm/js/app_comm.js b/stockholm/js/app_comm.js
+index 875d6fe..94ddd9e 100644
+--- a/stockholm/js/app_comm.js
++++ b/stockholm/js/app_comm.js
+@@ -11,8 +11,26 @@ function AppComm() {
+         }
+ 
+         var proxyPath = "/api/http-proxy";
++        var clientIdKey = "stockholmBridgeClientId";
+         var originalAjax = window.jQuery.ajax;
+ 
++        function readCookie(name) {
++            var prefix = name + "=";
++            var cookies = document.cookie ? document.cookie.split(";") : [];
++            for (var index = 0; index < cookies.length; index++) {
++                var cookie = cookies[index].trim();
++                if (cookie.indexOf(prefix) === 0) {
++                    return decodeURIComponent(cookie.substring(prefix.length));
++                }
++            }
++            return null;
++        }
++
++        function browserClientId() {
++            var bootstrap = window.StockholmBrowserBootstrap || {};
++            return bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(clientIdKey);
++        }
++
+         function resolveUrl(input) {
+             return new URL(input, window.location.href);
+         }
+@@ -33,7 +51,9 @@ function AppComm() {
+         }
+ 
+         function proxiedUrl(input) {
+-            return proxyPath + "?url=" + encodeURIComponent(resolveUrl(input).href);
++            var clientId = browserClientId();
++            var url = proxyPath + "?url=" + encodeURIComponent(resolveUrl(input).href);
++            return clientId ? url + "&clientId=" + encodeURIComponent(clientId) : url;
+         }
+ 
+         window.jQuery.ajax = function (url, options) {
+@@ -62,12 +82,31 @@ function AppComm() {
+         }
+ 
+         var clientIdKey = "stockholmBridgeClientId";
+-        var clientId = window.localStorage.getItem(clientIdKey);
+-        if (!clientId) {
+-            clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++
++        function readCookie(name) {
++            var prefix = name + "=";
++            var cookies = document.cookie ? document.cookie.split(";") : [];
++            for (var index = 0; index < cookies.length; index++) {
++                var cookie = cookies[index].trim();
++                if (cookie.indexOf(prefix) === 0) {
++                    return decodeURIComponent(cookie.substring(prefix.length));
++                }
++            }
++            return null;
++        }
++
++        function resolveClientId() {
++            var bootstrap = window.StockholmBrowserBootstrap || {};
++            var clientId = bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(clientIdKey);
++            if (!clientId) {
++                clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++            }
+             window.localStorage.setItem(clientIdKey, clientId);
++            return clientId;
+         }
+ 
++        var clientId = resolveClientId();
++
+         function resolveWebviewUrl(url) {
+             return new URL(url, window.location.origin + "/").href;
+         }
+diff --git a/stockholm/js/browser_http_proxy.js b/stockholm/js/browser_http_proxy.js
+index 5f06d68..c009697 100644
+--- a/stockholm/js/browser_http_proxy.js
++++ b/stockholm/js/browser_http_proxy.js
+@@ -4,8 +4,26 @@
+     }
+ 
+     var PROXY_PATH = "/api/http-proxy";
++    var CLIENT_ID_KEY = "stockholmBridgeClientId";
+     var originalAjax = window.jQuery.ajax;
+ 
++    function readCookie(name) {
++        var prefix = name + "=";
++        var cookies = document.cookie ? document.cookie.split(";") : [];
++        for (var index = 0; index < cookies.length; index++) {
++            var cookie = cookies[index].trim();
++            if (cookie.indexOf(prefix) === 0) {
++                return decodeURIComponent(cookie.substring(prefix.length));
++            }
++        }
++        return null;
++    }
++
++    function clientId() {
++        var bootstrap = window.StockholmBrowserBootstrap || {};
++        return bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(CLIENT_ID_KEY);
++    }
++
+     function resolveUrl(input) {
+         return new URL(input, window.location.href);
+     }
+@@ -35,7 +53,9 @@
+ 
+     function proxiedUrl(input) {
+         var target = resolveUrl(input);
+-        return PROXY_PATH + "?url=" + encodeURIComponent(target.href);
++        var resolvedClientId = clientId();
++        var url = PROXY_PATH + "?url=" + encodeURIComponent(target.href);
++        return resolvedClientId ? url + "&clientId=" + encodeURIComponent(resolvedClientId) : url;
+     }
+ 
+     function rewriteAjaxArgs(url, options) {
+diff --git a/stockholm/js/browser_native_bridge.js b/stockholm/js/browser_native_bridge.js
+index 2b7e562..7e43f08 100644
+--- a/stockholm/js/browser_native_bridge.js
++++ b/stockholm/js/browser_native_bridge.js
+@@ -7,12 +7,31 @@
+     }
+ 
+     var clientIdKey = "stockholmBridgeClientId";
+-    var clientId = window.localStorage.getItem(clientIdKey);
+-    if (!clientId) {
+-        clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++
++    function readCookie(name) {
++        var prefix = name + "=";
++        var cookies = document.cookie ? document.cookie.split(";") : [];
++        for (var index = 0; index < cookies.length; index++) {
++            var cookie = cookies[index].trim();
++            if (cookie.indexOf(prefix) === 0) {
++                return decodeURIComponent(cookie.substring(prefix.length));
++            }
++        }
++        return null;
++    }
++
++    function resolveClientId() {
++        var bootstrap = window.StockholmBrowserBootstrap || {};
++        var clientId = bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(clientIdKey);
++        if (!clientId) {
++            clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++        }
+         window.localStorage.setItem(clientIdKey, clientId);
++        return clientId;
+     }
+ 
++    var clientId = resolveClientId();
++
+     function resolveWebviewUrl(url) {
+         return new URL(url, window.location.origin + "/").href;
+     }
+diff --git a/stockholm/setup/js/app_comm.js b/stockholm/setup/js/app_comm.js
+index ada2175..f84eb36 100644
+--- a/stockholm/setup/js/app_comm.js
++++ b/stockholm/setup/js/app_comm.js
+@@ -11,8 +11,26 @@ function AppComm() {
+         }
+ 
+         var proxyPath = "/api/http-proxy";
++        var clientIdKey = "stockholmBridgeClientId";
+         var originalAjax = window.jQuery.ajax;
+ 
++        function readCookie(name) {
++            var prefix = name + "=";
++            var cookies = document.cookie ? document.cookie.split(";") : [];
++            for (var index = 0; index < cookies.length; index++) {
++                var cookie = cookies[index].trim();
++                if (cookie.indexOf(prefix) === 0) {
++                    return decodeURIComponent(cookie.substring(prefix.length));
++                }
++            }
++            return null;
++        }
++
++        function browserClientId() {
++            var bootstrap = window.StockholmBrowserBootstrap || {};
++            return bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(clientIdKey);
++        }
++
+         function resolveUrl(input) {
+             return new URL(input, window.location.href);
+         }
+@@ -33,7 +51,9 @@ function AppComm() {
+         }
+ 
+         function proxiedUrl(input) {
+-            return proxyPath + "?url=" + encodeURIComponent(resolveUrl(input).href);
++            var clientId = browserClientId();
++            var url = proxyPath + "?url=" + encodeURIComponent(resolveUrl(input).href);
++            return clientId ? url + "&clientId=" + encodeURIComponent(clientId) : url;
+         }
+ 
+         window.jQuery.ajax = function (url, options) {
+@@ -62,12 +82,31 @@ function AppComm() {
+         }
+ 
+         var clientIdKey = "stockholmBridgeClientId";
+-        var clientId = window.localStorage.getItem(clientIdKey);
+-        if (!clientId) {
+-            clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++
++        function readCookie(name) {
++            var prefix = name + "=";
++            var cookies = document.cookie ? document.cookie.split(";") : [];
++            for (var index = 0; index < cookies.length; index++) {
++                var cookie = cookies[index].trim();
++                if (cookie.indexOf(prefix) === 0) {
++                    return decodeURIComponent(cookie.substring(prefix.length));
++                }
++            }
++            return null;
++        }
++
++        function resolveClientId() {
++            var bootstrap = window.StockholmBrowserBootstrap || {};
++            var clientId = bootstrap.clientId || readCookie("stockholmClientId") || window.localStorage.getItem(clientIdKey);
++            if (!clientId) {
++                clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
++            }
+             window.localStorage.setItem(clientIdKey, clientId);
++            return clientId;
+         }
+ 
++        var clientId = resolveClientId();
++
+         function resolveWebviewUrl(url) {
+             return new URL(url, window.location.origin + "/").href;
+         }
