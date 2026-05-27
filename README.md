@@ -19,7 +19,7 @@ This project is under active development. Expect bugs and limitations.
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
-- Persists default `getData` / `setData` values under `state/native-state.json` and browser-specific values under `state/clients/`
+- Persists `getData` / `setData` values under `state/native-state.json` by default, with optional browser-specific state under `state/clients/`
 - Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
 - Rebuilds `stockholm/json/config.json` from `stockholm/json/backup.json` on container start so URL env changes take effect after restart
 - Reads backend configuration from `config/backend-config.json`
@@ -87,6 +87,7 @@ TZ=Europe/Berlin
 BACKEND_BIND_IP=0.0.0.0
 BACKEND_PORT=8088
 BACKEND_URL=http://soundcork:8000
+STOCKHOLM_CLIENT_STATE_MODE=per-browser
 # Optional; defaults to BACKEND_URL/marge when omitted.
 STREAMING_URL=http://soundcork:8000/marge
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
@@ -102,6 +103,26 @@ STREAMING_URL=http://soundcork:8000/marge
 
 The startup script always regenerates `stockholm/json/config.json` from `stockholm/json/backup.json`, so any URL environment changes show up after a container restart.
 
+### Client State
+
+`STOCKHOLM_CLIENT_STATE_MODE` controls whether all browsers share one Stockholm native state file or each browser gets its own state.
+
+The Docker Compose default is intentionally conservative:
+
+```env
+STOCKHOLM_CLIENT_STATE_MODE=single
+```
+
+`single` uses only `state/native-state.json`, matching older versions of this app. This is the default when the variable is unset so existing Docker users stay logged in after upgrading.
+
+For new installs, `per-browser` is recommended:
+
+```env
+STOCKHOLM_CLIENT_STATE_MODE=per-browser
+```
+
+`per-browser` gives each browser or device a `stockholmClientId` cookie and stores that browser's state under `state/clients/`. This lets one browser be logged into one account while another browser or device uses a different account. A browser without that cookie starts with a new empty client state, so enable this deliberately on existing installs.
+
 Optional Marge session values:
 
 ```env
@@ -111,7 +132,7 @@ MARGE_ACCOUNT_ID=
 
 `MARGE_AUTH_TOKEN` is the auth string stored by the Stockholm/SoundTouch flow. The backend also accepts `margeAuthToken` and `margeAccountID` aliases.
 
-If these variables are set, they overwrite the same keys in the default state file, `state/native-state.json`, on startup and are persisted there. Browser sessions keep their own state under `state/clients/` after they receive a `stockholmClientId` cookie, so different browsers or devices can log into different accounts. If the variables are absent, existing persisted values will be used. Treat both `.env` and the `state/` directory as sensitive local data.
+If these variables are set, they overwrite the same keys in the default state file, `state/native-state.json`, on startup and are persisted there. If they are absent, existing persisted values will be used. Treat both `.env` and the `state/` directory as sensitive local data.
 
 ## Networking
 
