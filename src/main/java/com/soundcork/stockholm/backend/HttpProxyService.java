@@ -82,22 +82,37 @@ final class HttpProxyService {
 
     private final SoundcorkDataService soundcorkDataService;
     private final HttpClient httpClient;
+    private final BackendApplication.ClientStateMode clientStateMode;
 
     HttpProxyService(SoundcorkDataService soundcorkDataService) {
+        this(soundcorkDataService, BackendApplication.ClientStateMode.fromEnvironment(System.getenv()));
+    }
+
+    HttpProxyService(SoundcorkDataService soundcorkDataService, BackendApplication.ClientStateMode clientStateMode) {
         this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .version(HttpClient.Version.HTTP_1_1)
-                .build(), soundcorkDataService);
+                .build(), soundcorkDataService, clientStateMode);
     }
 
     HttpProxyService(HttpClient httpClient, SoundcorkDataService soundcorkDataService) {
+        this(httpClient, soundcorkDataService, BackendApplication.ClientStateMode.fromEnvironment(System.getenv()));
+    }
+
+    HttpProxyService(
+            HttpClient httpClient,
+            SoundcorkDataService soundcorkDataService,
+            BackendApplication.ClientStateMode clientStateMode) {
         this.httpClient = httpClient;
         this.soundcorkDataService = soundcorkDataService;
+        this.clientStateMode = clientStateMode == null
+                ? BackendApplication.ClientStateMode.SINGLE
+                : clientStateMode;
     }
 
     void handle(HttpExchange exchange) throws IOException {
-        String clientId = BackendApplication.ensureClientId(exchange);
+        String clientId = BackendApplication.ensureClientId(exchange, clientStateMode);
         soundcorkDataService.seedBrowserRuntimeState(clientId);
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
         String encodedTarget = queryParam(exchange, "url");

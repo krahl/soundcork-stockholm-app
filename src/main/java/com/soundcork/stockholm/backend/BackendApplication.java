@@ -31,12 +31,14 @@ public final class BackendApplication {
         Path stockholmRoot = workspaceRoot.resolve("stockholm").normalize();
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
         BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
+        ClientStateMode clientStateMode = ClientStateMode.fromEnvironment(System.getenv());
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         SoundcorkDataService soundcorkDataService = new SoundcorkDataService(workspaceRoot, bridgeService);
-        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService);
+        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService, clientStateMode);
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
+        LOGGER.info("Client state mode is {}", clientStateMode.configValue());
 
         // Read IP and port from environment variables, fallback to defaults
         String bindIp = System.getenv().getOrDefault("BACKEND_BIND_IP", "0.0.0.0");
@@ -49,12 +51,12 @@ public final class BackendApplication {
         InetSocketAddress socketAddress = new InetSocketAddress(bindIp, bindPort);
         HttpServer server = HttpServer.create(socketAddress, 0);
         server.setExecutor(Executors.newCachedThreadPool());
-        server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
-        server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService));
+        server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService, clientStateMode));
+        server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService, clientStateMode));
         server.createContext("/api/http-proxy", httpProxyService::handle);
-        server.createContext("/api/debug/state", exchange -> handleDebugState(exchange, soundcorkDataService, bridgeService));
+        server.createContext("/api/debug/state", exchange -> handleDebugState(exchange, soundcorkDataService, bridgeService, clientStateMode));
         server.createContext("/api/debug/test-login", exchange -> handleDebugTestLogin(exchange, soundcorkDataService));
-        server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig, soundcorkDataService));
+        server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig, soundcorkDataService, clientStateMode));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("Shutting down Stockholm backend");
@@ -70,13 +72,16 @@ public final class BackendApplication {
         LOGGER.info("  Test login: http://127.0.0.1:{}/api/debug/test-login?email=EMAIL&password=PASS", socketAddress.getPort());
     }
 
-    private static void handleAppSend(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
+    private static void handleAppSend(
+            HttpExchange exchange,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             LOGGER.debug("Rejected {} request to /api/native/appSend", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = ensureClientId(exchange);
+        String clientId = ensureClientId(exchange, clientStateMode);
         String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         LOGGER.debug("Received /api/native/appSend for client '{}'", describeClientId(clientId));
         bridgeService.handleAppSend(clientId, payload);
@@ -84,18 +89,24 @@ public final class BackendApplication {
         exchange.close();
     }
 
-    private static void handleRunQueue(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
+    private static void handleRunQueue(
+            HttpExchange exchange,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             LOGGER.debug("Rejected {} request to /api/native/runQueue", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = ensureClientId(exchange);
+        String clientId = ensureClientId(exchange, clientStateMode);
         LOGGER.debug("Received /api/native/runQueue for client '{}'", describeClientId(clientId));
         sendText(exchange, 200, bridgeService.runQueue(clientId), "application/json; charset=UTF-8");
     }
 
-    static String ensureClientId(HttpExchange exchange) {
+    static String ensureClientId(HttpExchange exchange, ClientStateMode clientStateMode) {
+        if (!clientStateMode.isPerBrowser()) {
+            return NativeBridgeService.DEFAULT_CLIENT_ID;
+        }
         String clientId = clientId(exchange);
         if (clientId == null) {
             clientId = "stockholm-" + UUID.randomUUID();
@@ -107,6 +118,10 @@ public final class BackendApplication {
                             + "; Path=/; SameSite=Lax");
         }
         return clientId;
+    }
+
+    static String ensureClientId(HttpExchange exchange) {
+        return ensureClientId(exchange, ClientStateMode.fromEnvironment(System.getenv()));
     }
 
     static String clientId(HttpExchange exchange) {
@@ -189,13 +204,18 @@ public final class BackendApplication {
         }
     }
 
-    private static void handleDebugState(HttpExchange exchange, SoundcorkDataService soundcorkDataService, NativeBridgeService bridgeService) throws IOException {
+    private static void handleDebugState(
+            HttpExchange exchange,
+            SoundcorkDataService soundcorkDataService,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
         var info = new java.util.LinkedHashMap<String, Object>();
-        String clientId = ensureClientId(exchange);
+        String clientId = ensureClientId(exchange, clientStateMode);
+        info.put("clientStateMode", clientStateMode.configValue());
         info.put("clientId", clientId);
         info.put("authServer", soundcorkDataService.authServer(clientId));
         info.put("guid", soundcorkDataService.guid(clientId));
@@ -346,19 +366,22 @@ public final class BackendApplication {
         private final Path stockholmRoot;
         private final BackendConfig backendConfig;
         private final SoundcorkDataService soundcorkDataService;
+        private final ClientStateMode clientStateMode;
 
         private StaticStockholmHandler(
                 Path stockholmRoot,
                 BackendConfig backendConfig,
-                SoundcorkDataService soundcorkDataService) {
+                SoundcorkDataService soundcorkDataService,
+                ClientStateMode clientStateMode) {
             this.stockholmRoot = stockholmRoot;
             this.backendConfig = backendConfig;
             this.soundcorkDataService = soundcorkDataService;
+            this.clientStateMode = clientStateMode;
         }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            String clientId = ensureClientId(exchange);
+            String clientId = ensureClientId(exchange, clientStateMode);
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
                 LOGGER.debug("Rejected {} request for static path {}", exchange.getRequestMethod(),
                         exchange.getRequestURI().getPath());
@@ -445,11 +468,13 @@ public final class BackendApplication {
 
         private String browserBootstrapScript(String clientId) {
             String bootstrapJson = SimpleJson.stringify(soundcorkDataService.browserBootstrapPayload(clientId));
+            String clientStateModeJson = SimpleJson.stringify(clientStateMode.configValue());
             return """
                     <script>
                     (function () {
                         window.StockholmBrowserBootstrap = %s;
                         var bootstrap = window.StockholmBrowserBootstrap || {};
+                        var clientStateMode = %s;
 
                         function toBase64(value) {
                             return window.btoa(unescape(encodeURIComponent(String(value))));
@@ -475,7 +500,7 @@ public final class BackendApplication {
                             return config;
                         }
 
-                        if (bootstrap.clientId) {
+                        if (clientStateMode === "per-browser" && bootstrap.clientId) {
                             try {
                                 window.localStorage.setItem("stockholmBridgeClientId", bootstrap.clientId);
                             } catch (ignored) {
@@ -535,7 +560,7 @@ public final class BackendApplication {
                     })();
                     </script>
                     """
-                    .formatted(bootstrapJson);
+                    .formatted(bootstrapJson, clientStateModeJson);
         }
 
         private String contentType(Path file) {
@@ -577,6 +602,47 @@ public final class BackendApplication {
                 return "text/plain; charset=UTF-8";
             }
             return "application/octet-stream";
+        }
+    }
+
+    enum ClientStateMode {
+        SINGLE("single"),
+        PER_BROWSER("per-browser");
+
+        private static final String ENVIRONMENT_KEY = "STOCKHOLM_CLIENT_STATE_MODE";
+        private final String configValue;
+
+        ClientStateMode(String configValue) {
+            this.configValue = configValue;
+        }
+
+        String configValue() {
+            return configValue;
+        }
+
+        boolean isPerBrowser() {
+            return this == PER_BROWSER;
+        }
+
+        static ClientStateMode fromEnvironment(java.util.Map<String, String> environment) {
+            if (environment == null) {
+                return SINGLE;
+            }
+            return fromValue(environment.get(ENVIRONMENT_KEY));
+        }
+
+        static ClientStateMode fromValue(String value) {
+            if (value == null || value.isBlank()) {
+                return SINGLE;
+            }
+            String normalized = value.trim().toLowerCase(Locale.ROOT);
+            if ("per-browser".equals(normalized) || "per_browser".equals(normalized) || "multi".equals(normalized)) {
+                return PER_BROWSER;
+            }
+            if (!"single".equals(normalized) && !"default".equals(normalized) && !"legacy".equals(normalized)) {
+                LOGGER.warn("Unknown {} value '{}'; using single-client state", ENVIRONMENT_KEY, value);
+            }
+            return SINGLE;
         }
     }
 }
