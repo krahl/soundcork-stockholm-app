@@ -1,0 +1,35 @@
+diff --git a/stockholm/js/list.js b/stockholm/js/list.js
+--- a/stockholm/js/list.js
++++ b/stockholm/js/list.js
+@@ -1183,7 +1183,7 @@ function List() {
+                 On = funcObj.contentCon.getContent("tile", {
+                   repl: {
+                     IDNUM: on - C,
+-                    IMAGEFILENAME: 'url("' + r[on] + '")',
++                    IMAGEFILENAME: 'url("' + proxyImageUrl(r[on]) + '")',
+                     MAINLABEL: funcObj.UIMain.minEscape(t[on]),
+                     SUBLABEL: n[on] || "",
+                     TILEDECORATION:
+@@ -1196,7 +1196,7 @@ function List() {
+               } else {
+                 var O = "",
+                   M = srcObj[u].getFeature("sourceColor"),
+-                  _ = 'url("' + r[on] + '")';
++                  _ = 'url("' + proxyImageUrl(r[on]) + '")';
+                 (r[on] &&
+                 (r[on].indexOf("http://") > -1 ||
+                   r[on].indexOf("https://") > -1)
+diff --git a/stockholm/js/browser_http_proxy.js b/stockholm/js/browser_http_proxy.js
+--- a/stockholm/js/browser_http_proxy.js
++++ b/stockholm/js/browser_http_proxy.js
+@@ -49,6 +49,9 @@
+         return originalAjax.apply(this, rewrittenArgs);
+     };
+-
++    window.proxyImageUrl = function (input) {
++        return shouldProxy(input) ? proxiedUrl(input) : input;
++    };
++
+     window.StockholmBrowserHttpProxy = {
+         proxyUrl: function (input) {
+             return shouldProxy(input) ? proxiedUrl(input) : input;
