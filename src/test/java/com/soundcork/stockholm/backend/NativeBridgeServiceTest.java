@@ -66,11 +66,11 @@ final class NativeBridgeServiceTest {
         try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
                 "margeAuthToken", "token-for-get-data",
                 "margeAccountID", "4567890"))) {
-            bridgeService.handleAppSend("test-client", """
+            bridgeService.handleAppSend(null, """
                     {"method":"getData","params":{"name":"margeAuthToken"},"id":7}
                     """);
 
-            Map<String, Object> wrapper = SimpleJson.asObject(SimpleJson.parse(bridgeService.runQueue("test-client")));
+            Map<String, Object> wrapper = SimpleJson.asObject(SimpleJson.parse(bridgeService.runQueue(null)));
             @SuppressWarnings("unchecked")
             List<Object> messages = (List<Object>) wrapper.get("messages");
             Map<String, Object> message = SimpleJson.asObject(messages.get(0));
@@ -91,6 +91,38 @@ final class NativeBridgeServiceTest {
                 "MARGE_ACCOUNT_ID", "6789012"))) {
             assertEquals("exact-token", bridgeService.getStateValue("margeAuthToken"));
             assertEquals("5678901", bridgeService.getStateValue("margeAccountID"));
+        }
+    }
+
+    @Test
+    void setDataIsScopedByClient() {
+        Path stateFile = tempDir.resolve("native-state.json");
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+            bridgeService.handleAppSend("client-a", """
+                    {"method":"setData","params":{"name":"margeAccountID","value":"account-a"},"id":1}
+                    """);
+            bridgeService.handleAppSend("client-b", """
+                    {"method":"setData","params":{"name":"margeAccountID","value":"account-b"},"id":2}
+                    """);
+
+            assertEquals("account-a", bridgeService.getStateValue("client-a", "margeAccountID"));
+            assertEquals("account-b", bridgeService.getStateValue("client-b", "margeAccountID"));
+        }
+    }
+
+    @Test
+    void clientStatePersistsSeparatelyFromDefaultState() {
+        Path stateFile = tempDir.resolve("native-state.json");
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+            bridgeService.putStateValue("margeAccountID", "default-account");
+            bridgeService.putStateValue("client-a", "margeAccountID", "account-a");
+        }
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+            assertEquals("default-account", bridgeService.getStateValue("margeAccountID"));
+            assertEquals("account-a", bridgeService.getStateValue("client-a", "margeAccountID"));
         }
     }
 }
