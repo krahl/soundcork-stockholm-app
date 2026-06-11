@@ -1,0 +1,16 @@
+diff --git a/stockholm/js/ui_main.js b/stockholm/js/ui_main.js
+--- a/stockholm/js/ui_main.js
++++ b/stockholm/js/ui_main.js
+@@ -612,7 +612,11 @@
+         (o.src = ""),
+         (o = null));
+     }
+-    var r = e,
++    var r =
++        window.StockholmBrowserHttpProxy &&
++        typeof window.StockholmBrowserHttpProxy.proxyUrl == "function"
++          ? window.StockholmBrowserHttpProxy.proxyUrl(e)
++          : e,
+       i = w;
+     (srcObj[t] != undefined &&
+       typeof srcObj[t].getFeature == "function" &&
