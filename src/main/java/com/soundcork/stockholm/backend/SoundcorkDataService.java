@@ -61,8 +61,17 @@ final class SoundcorkDataService {
         this.overrideKilo = stringValue(loadObject(overrideFile).get("kilo"));
         this.margeServerKey = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d10")));
         this.margeServerKeyHeader = SoundcorkCrypto.decodeBase64String(stringValue(defaults.get("d13")));
-        seedBrowserRuntimeState();
+        try {
+            bridgeService.setCurrentClient(NativeBridgeService.DEFAULT_CLIENT_ID);
+            seedBrowserRuntimeState();
+        } finally {
+            bridgeService.clearCurrentClient();
+        }
         LOGGER.debug("Loaded SoundcorkDataService using config={} override={}", configFile, overrideFile);
+    }
+
+    public NativeBridgeService getBridgeService() {
+      return bridgeService;
     }
 
     String authServer() {

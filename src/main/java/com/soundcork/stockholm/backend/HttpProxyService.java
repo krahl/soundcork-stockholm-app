@@ -82,21 +82,31 @@ final class HttpProxyService {
 
     private final SoundcorkDataService soundcorkDataService;
     private final HttpClient httpClient;
+    private final NativeBridgeService bridgeService;
 
-    HttpProxyService(SoundcorkDataService soundcorkDataService) {
+    HttpProxyService(SoundcorkDataService soundcorkDataService, NativeBridgeService bridgeService) {
         this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .version(HttpClient.Version.HTTP_1_1)
-                .build(), soundcorkDataService);
+                .build(), soundcorkDataService, bridgeService);
     }
 
-    HttpProxyService(HttpClient httpClient, SoundcorkDataService soundcorkDataService) {
+    HttpProxyService(HttpClient httpClient, SoundcorkDataService soundcorkDataService, NativeBridgeService bridgeService) {
         this.httpClient = httpClient;
         this.soundcorkDataService = soundcorkDataService;
+        this.bridgeService = bridgeService;
     }
 
     void handle(HttpExchange exchange) throws IOException {
+      try {
+        String clientId = BackendApplication.clientId(exchange);
+        if (clientId == null) {
+            LOGGER.debug("proxy request using default client");
+            clientId = NativeBridgeService.DEFAULT_CLIENT_ID;
+        }
+        bridgeService.setCurrentClient(clientId);
+
         String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
         String encodedTarget = queryParam(exchange, "url");
         if (LOGGER.isTraceEnabled()) {
@@ -146,6 +156,9 @@ final class HttpProxyService {
             LOGGER.warn("Failed proxy request {} {}", method, target, exception);
             BackendApplication.sendText(exchange, 502, "Proxy request failed", "text/plain; charset=UTF-8");
         }
+      } finally {
+        bridgeService.clearCurrentClient();
+      }
     }
 
     private boolean isSupportedTarget(URI target) {
@@ -272,13 +285,18 @@ final class HttpProxyService {
     private RequestOutcome executeWithCloudHandling(String method, Headers requestHeaders, URI target, byte[] requestBody)
             throws IOException, InterruptedException {
         RequestOutcome outcome = executeRequest(method, requestHeaders, target, requestBody);
-
+        // captureSuccessfulLogin and captureRefreshedAuthToken don't actually seem to be
+        // necessary, and also since the http proxy service is running in the default client
+        // context, it actually causes problems now. leaving the code in case it needs to be
+        // restored.
+        /*
         if (isLoginRequest(method, outcome.target())) {
             outcome = retryLoginWithEnvironmentIfNeeded(method, requestHeaders, outcome, requestBody);
             captureSuccessfulLogin(outcome.response());
         }
 
         captureRefreshedAuthToken(outcome.target(), outcome.response());
+        */
         return outcome;
     }
 
