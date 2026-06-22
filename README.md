@@ -19,7 +19,7 @@ This project is under active development. Expect bugs and limitations.
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
-- Persists `getData` / `setData` values under `state/native-state.json`
+- Persists `getData` / `setData` values per browser under `state/clients/` by default, with legacy shared state in `state/native-state.json`
 - Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
 - Rebuilds `stockholm/json/config.json` from `stockholm/json/backup.json` on container start so URL env changes take effect after restart
 - Reads backend configuration from `config/backend-config.json`
@@ -87,6 +87,9 @@ TZ=Europe/Berlin
 BACKEND_BIND_IP=0.0.0.0
 BACKEND_PORT=8088
 BACKEND_URL=http://soundcork:8000
+STOCKHOLM_CLIENT_STATE_MODE=per-browser
+STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED=true
+STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS=24
 # Optional; defaults to BACKEND_URL/marge when omitted.
 STREAMING_URL=http://soundcork:8000/marge
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
@@ -102,6 +105,40 @@ STREAMING_URL=http://soundcork:8000/marge
 
 The startup script always regenerates `stockholm/json/config.json` from `stockholm/json/backup.json`, so any URL environment changes show up after a container restart.
 
+### Client State
+
+`STOCKHOLM_CLIENT_STATE_MODE` controls whether all browsers share one Stockholm native state file or each browser gets its own state.
+
+The default is `per-browser`:
+
+```env
+STOCKHOLM_CLIENT_STATE_MODE=per-browser
+```
+
+`per-browser` gives each browser or device a `stockholmClientId` cookie and stores that browser's state under `state/clients/`. This lets one browser be logged into one account while another browser or device uses a different account.
+
+When upgrading from older shared-state versions, browsers without existing per-browser state can copy the legacy `state/native-state.json` login during a grace period. The default grace period is 24 hours and is recorded in `state/clients/.default-state-migration-window.json`. This migration window is opened only when `state/native-state.json` already exists with both `margeAuthToken` and `margeAccountID`, so fresh installs do not inherit empty or environment-only state forever.
+
+To disable this upgrade migration entirely, set:
+
+```env
+STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED=false
+```
+
+To change the grace period, set:
+
+```env
+STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS=24
+```
+
+To keep the old shared-session behavior, set:
+
+```env
+STOCKHOLM_CLIENT_STATE_MODE=single
+```
+
+`single` uses only `state/native-state.json`, matching older versions of this app.
+
 Optional Marge session values:
 
 ```env
@@ -111,7 +148,7 @@ MARGE_ACCOUNT_ID=
 
 `MARGE_AUTH_TOKEN` is the auth string stored by the Stockholm/SoundTouch flow. The backend also accepts `margeAuthToken` and `margeAccountID` aliases.
 
-If these variables are set, they overwrite the same keys in `state/native-state.json` on startup and are persisted there. If they are absent, values in `state/native-state.json` will be used if existing. Treat both `.env` and `state/native-state.json` as sensitive local files.
+If these variables are set, they overwrite the same keys in the default state file, `state/native-state.json`, on startup and are persisted there. If they are absent, existing persisted values will be used. Treat both `.env` and the `state/` directory as sensitive local data.
 
 ## Networking
 

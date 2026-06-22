@@ -13,12 +13,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class BackendApplication {
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendApplication.class);
+    private static final String CLIENT_ID_COOKIE = "stockholmClientId";
+    private static final int CLIENT_ID_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
     private BackendApplication() {
     }
@@ -28,12 +31,14 @@ public final class BackendApplication {
         Path stockholmRoot = workspaceRoot.resolve("stockholm").normalize();
         Path stateFile = workspaceRoot.resolve("backend").resolve("state").resolve("native-state.json").normalize();
         BackendConfig backendConfig = BackendConfig.load(workspaceRoot);
+        ClientStateMode clientStateMode = ClientStateMode.fromEnvironment(System.getenv());
         NativeBridgeService bridgeService = new NativeBridgeService(stateFile);
         SoundcorkDataService soundcorkDataService = new SoundcorkDataService(workspaceRoot, bridgeService);
-        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService);
+        HttpProxyService httpProxyService = new HttpProxyService(soundcorkDataService, clientStateMode);
         LOGGER.debug("Resolved workspace root {} with stockholmRoot={} and stateFile={}",
                 workspaceRoot, stockholmRoot, stateFile);
         LOGGER.debug("Frontend logging level is configured to {}", backendConfig.frontendLoggingLevel());
+        LOGGER.info("Client state mode is {}", clientStateMode.configValue());
 
         // Read IP and port from environment variables, fallback to defaults
         String bindIp = System.getenv().getOrDefault("BACKEND_BIND_IP", "0.0.0.0");
@@ -46,12 +51,12 @@ public final class BackendApplication {
         InetSocketAddress socketAddress = new InetSocketAddress(bindIp, bindPort);
         HttpServer server = HttpServer.create(socketAddress, 0);
         server.setExecutor(Executors.newCachedThreadPool());
-        server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService));
-        server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService));
+        server.createContext("/api/native/appSend", exchange -> handleAppSend(exchange, bridgeService, clientStateMode));
+        server.createContext("/api/native/runQueue", exchange -> handleRunQueue(exchange, bridgeService, clientStateMode));
         server.createContext("/api/http-proxy", httpProxyService::handle);
-        server.createContext("/api/debug/state", exchange -> handleDebugState(exchange, soundcorkDataService, bridgeService));
+        server.createContext("/api/debug/state", exchange -> handleDebugState(exchange, soundcorkDataService, bridgeService, clientStateMode));
         server.createContext("/api/debug/test-login", exchange -> handleDebugTestLogin(exchange, soundcorkDataService));
-        server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig, soundcorkDataService));
+        server.createContext("/", new StaticStockholmHandler(stockholmRoot, backendConfig, soundcorkDataService, clientStateMode));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("Shutting down Stockholm backend");
@@ -67,13 +72,16 @@ public final class BackendApplication {
         LOGGER.info("  Test login: http://127.0.0.1:{}/api/debug/test-login?email=EMAIL&password=PASS", socketAddress.getPort());
     }
 
-    private static void handleAppSend(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
+    private static void handleAppSend(
+            HttpExchange exchange,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             LOGGER.debug("Rejected {} request to /api/native/appSend", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = clientId(exchange);
+        String clientId = ensureClientId(exchange, clientStateMode);
         String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         LOGGER.debug("Received /api/native/appSend for client '{}'", describeClientId(clientId));
         bridgeService.handleAppSend(clientId, payload);
@@ -81,33 +89,108 @@ public final class BackendApplication {
         exchange.close();
     }
 
-    private static void handleRunQueue(HttpExchange exchange, NativeBridgeService bridgeService) throws IOException {
+    private static void handleRunQueue(
+            HttpExchange exchange,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             LOGGER.debug("Rejected {} request to /api/native/runQueue", exchange.getRequestMethod());
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
-        String clientId = clientId(exchange);
+        String clientId = ensureClientId(exchange, clientStateMode);
         LOGGER.debug("Received /api/native/runQueue for client '{}'", describeClientId(clientId));
         sendText(exchange, 200, bridgeService.runQueue(clientId), "application/json; charset=UTF-8");
     }
 
-    private static String clientId(HttpExchange exchange) {
-        String header = exchange.getRequestHeaders().getFirst("X-Stockholm-Client-Id");
-        if (header != null && !header.isBlank()) {
+    static String ensureClientId(HttpExchange exchange, ClientStateMode clientStateMode) {
+        if (!clientStateMode.isPerBrowser()) {
+            return NativeBridgeService.DEFAULT_CLIENT_ID;
+        }
+        String clientId = clientId(exchange);
+        if (clientId == null) {
+            clientId = "stockholm-" + UUID.randomUUID();
+        }
+        String cookieClientId = clientIdCookie(exchange);
+        if (!clientId.equals(cookieClientId)) {
+            exchange.getResponseHeaders().add("Set-Cookie",
+                    CLIENT_ID_COOKIE + "=" + clientId + "; Max-Age=" + CLIENT_ID_COOKIE_MAX_AGE_SECONDS
+                            + "; Path=/; SameSite=Lax");
+        }
+        return clientId;
+    }
+
+    static String ensureClientId(HttpExchange exchange) {
+        return ensureClientId(exchange, ClientStateMode.fromEnvironment(System.getenv()));
+    }
+
+    static String clientId(HttpExchange exchange) {
+        String header = normalizeClientId(exchange.getRequestHeaders().getFirst("X-Stockholm-Client-Id"));
+        if (header != null) {
             return header;
         }
         String query = exchange.getRequestURI().getRawQuery();
-        if (query == null || query.isBlank()) {
-            return null;
-        }
-        for (String part : query.split("&")) {
-            int separator = part.indexOf('=');
-            if (separator > 0 && "clientId".equals(part.substring(0, separator))) {
-                return URLDecoder.decode(part.substring(separator + 1), StandardCharsets.UTF_8);
+        if (query != null && !query.isBlank()) {
+            for (String part : query.split("&")) {
+                int separator = part.indexOf('=');
+                if (separator > 0 && "clientId".equals(part.substring(0, separator))) {
+                    String queryClientId = normalizeClientId(urlDecode(part.substring(separator + 1)));
+                    if (queryClientId != null) {
+                        return queryClientId;
+                    }
+                }
             }
         }
+        return clientIdCookie(exchange);
+    }
+
+    private static String clientIdCookie(HttpExchange exchange) {
+        String cookieHeader = exchange.getRequestHeaders().getFirst("Cookie");
+        if (cookieHeader == null || cookieHeader.isBlank()) {
+            return null;
+        }
+        for (String cookie : cookieHeader.split(";")) {
+            String trimmed = cookie.trim();
+            int separator = trimmed.indexOf('=');
+            if (separator <= 0 || !CLIENT_ID_COOKIE.equals(trimmed.substring(0, separator))) {
+                continue;
+            }
+            return normalizeClientId(urlDecode(trimmed.substring(separator + 1)));
+        }
         return null;
+    }
+
+    private static String urlDecode(String value) {
+        try {
+            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            LOGGER.debug("Ignoring malformed client id encoding", exception);
+            return null;
+        }
+    }
+
+    private static String normalizeClientId(String clientId) {
+        if (clientId == null || clientId.isBlank()) {
+            return null;
+        }
+        String trimmed = clientId.trim();
+        if (trimmed.length() > 128) {
+            return null;
+        }
+        for (int index = 0; index < trimmed.length(); index++) {
+            char current = trimmed.charAt(index);
+            boolean allowed = current >= 'a' && current <= 'z'
+                    || current >= 'A' && current <= 'Z'
+                    || current >= '0' && current <= '9'
+                    || current == '.'
+                    || current == '_'
+                    || current == '~'
+                    || current == '-';
+            if (!allowed) {
+                return null;
+            }
+        }
+        return trimmed;
     }
 
     static void sendText(HttpExchange exchange, int status, String body, String contentType) throws IOException {
@@ -121,24 +204,31 @@ public final class BackendApplication {
         }
     }
 
-    private static void handleDebugState(HttpExchange exchange, SoundcorkDataService soundcorkDataService, NativeBridgeService bridgeService) throws IOException {
+    private static void handleDebugState(
+            HttpExchange exchange,
+            SoundcorkDataService soundcorkDataService,
+            NativeBridgeService bridgeService,
+            ClientStateMode clientStateMode) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendText(exchange, 405, "Method Not Allowed", "text/plain");
             return;
         }
         var info = new java.util.LinkedHashMap<String, Object>();
-        info.put("authServer", soundcorkDataService.authServer());
-        info.put("guid", soundcorkDataService.guid());
-        info.put("nativeFrameVersion", soundcorkDataService.nativeFrameVersion());
-        info.put("fullNativeVersion", soundcorkDataService.fullNativeVersion());
-        info.put("currentMargeUrl", soundcorkDataService.currentMargeUrl());
-        info.put("overrideMargeUrl", soundcorkDataService.overrideMargeUrl());
-        info.put("currentUpdateUrl", soundcorkDataService.currentUpdateUrl());
+        String clientId = ensureClientId(exchange, clientStateMode);
+        info.put("clientStateMode", clientStateMode.configValue());
+        info.put("clientId", clientId);
+        info.put("authServer", soundcorkDataService.authServer(clientId));
+        info.put("guid", soundcorkDataService.guid(clientId));
+        info.put("nativeFrameVersion", soundcorkDataService.nativeFrameVersion(clientId));
+        info.put("fullNativeVersion", soundcorkDataService.fullNativeVersion(clientId));
+        info.put("currentMargeUrl", soundcorkDataService.currentMargeUrl(clientId));
+        info.put("overrideMargeUrl", soundcorkDataService.overrideMargeUrl(clientId));
+        info.put("currentUpdateUrl", soundcorkDataService.currentUpdateUrl(clientId));
         info.put("bmxApiKey", soundcorkDataService.bmxApiKey());
         info.put("margeServerKey", soundcorkDataService.margeServerKey());
         info.put("margeServerKeyHeader", soundcorkDataService.margeServerKeyHeader());
-        info.put("margeAuthToken", soundcorkDataService.margeAuthToken() != null ? "<present>" : null);
-        info.put("margeAccountID", bridgeService.getStateValue("margeAccountID"));
+        info.put("margeAuthToken", soundcorkDataService.margeAuthToken(clientId) != null ? "<present>" : null);
+        info.put("margeAccountID", bridgeService.getStateValue(clientId, "margeAccountID"));
         info.put("defaultClientType", soundcorkDataService.defaultClientType());
         info.put("streamingMediaType", soundcorkDataService.streamingMediaType());
         info.put("boseAppVersion", soundcorkDataService.soundcorkAppVersion());
@@ -276,18 +366,22 @@ public final class BackendApplication {
         private final Path stockholmRoot;
         private final BackendConfig backendConfig;
         private final SoundcorkDataService soundcorkDataService;
+        private final ClientStateMode clientStateMode;
 
         private StaticStockholmHandler(
                 Path stockholmRoot,
                 BackendConfig backendConfig,
-                SoundcorkDataService soundcorkDataService) {
+                SoundcorkDataService soundcorkDataService,
+                ClientStateMode clientStateMode) {
             this.stockholmRoot = stockholmRoot;
             this.backendConfig = backendConfig;
             this.soundcorkDataService = soundcorkDataService;
+            this.clientStateMode = clientStateMode;
         }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            String clientId = ensureClientId(exchange, clientStateMode);
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
                 LOGGER.debug("Rejected {} request for static path {}", exchange.getRequestMethod(),
                         exchange.getRequestURI().getPath());
@@ -304,7 +398,7 @@ public final class BackendApplication {
 
             byte[] bytes = Files.readAllBytes(file);
             if (shouldInjectBrowserBootstrap(file)) {
-                bytes = injectBrowserBootstrap(bytes);
+                bytes = injectBrowserBootstrap(clientId, bytes);
             }
             Headers headers = exchange.getResponseHeaders();
             applyFrontendLoggingCookie(headers);
@@ -357,7 +451,7 @@ public final class BackendApplication {
             return "index.html".equals(relativePath) || "setup/index.html".equals(relativePath);
         }
 
-        private byte[] injectBrowserBootstrap(byte[] originalBytes) {
+        private byte[] injectBrowserBootstrap(String clientId, byte[] originalBytes) {
             String html = new String(originalBytes, StandardCharsets.UTF_8);
             if (html.contains("window.StockholmBrowserBootstrap")) {
                 return originalBytes;
@@ -367,18 +461,20 @@ public final class BackendApplication {
                 return originalBytes;
             }
             String injected = html.substring(0, headEnd)
-                    + browserBootstrapScript()
+                    + browserBootstrapScript(clientId)
                     + html.substring(headEnd);
             return injected.getBytes(StandardCharsets.UTF_8);
         }
 
-        private String browserBootstrapScript() {
-            String bootstrapJson = SimpleJson.stringify(soundcorkDataService.browserBootstrapPayload());
+        private String browserBootstrapScript(String clientId) {
+            String bootstrapJson = SimpleJson.stringify(soundcorkDataService.browserBootstrapPayload(clientId));
+            String clientStateModeJson = SimpleJson.stringify(clientStateMode.configValue());
             return """
                     <script>
                     (function () {
                         window.StockholmBrowserBootstrap = %s;
                         var bootstrap = window.StockholmBrowserBootstrap || {};
+                        var clientStateMode = %s;
 
                         function toBase64(value) {
                             return window.btoa(unescape(encodeURIComponent(String(value))));
@@ -402,6 +498,15 @@ public final class BackendApplication {
                                 }
                             });
                             return config;
+                        }
+
+                        if (clientStateMode === "per-browser" && bootstrap.clientId) {
+                            try {
+                                window.localStorage.setItem("stockholmBridgeClientId", bootstrap.clientId);
+                            } catch (ignored) {
+                            }
+                            document.cookie = "stockholmClientId=" + encodeURIComponent(bootstrap.clientId)
+                                    + "; Max-Age=31536000; Path=/; SameSite=Lax";
                         }
 
                         var originalGetURLParams = window.getURLParams;
@@ -455,7 +560,7 @@ public final class BackendApplication {
                     })();
                     </script>
                     """
-                    .formatted(bootstrapJson);
+                    .formatted(bootstrapJson, clientStateModeJson);
         }
 
         private String contentType(Path file) {
@@ -497,6 +602,49 @@ public final class BackendApplication {
                 return "text/plain; charset=UTF-8";
             }
             return "application/octet-stream";
+        }
+    }
+
+    enum ClientStateMode {
+        SINGLE("single"),
+        PER_BROWSER("per-browser");
+
+        private static final String ENVIRONMENT_KEY = "STOCKHOLM_CLIENT_STATE_MODE";
+        private final String configValue;
+
+        ClientStateMode(String configValue) {
+            this.configValue = configValue;
+        }
+
+        String configValue() {
+            return configValue;
+        }
+
+        boolean isPerBrowser() {
+            return this == PER_BROWSER;
+        }
+
+        static ClientStateMode fromEnvironment(java.util.Map<String, String> environment) {
+            if (environment == null) {
+                return PER_BROWSER;
+            }
+            return fromValue(environment.get(ENVIRONMENT_KEY));
+        }
+
+        static ClientStateMode fromValue(String value) {
+            if (value == null || value.isBlank()) {
+                return PER_BROWSER;
+            }
+            String normalized = value.trim().toLowerCase(Locale.ROOT);
+            if ("per-browser".equals(normalized) || "per_browser".equals(normalized)
+                    || "multi".equals(normalized) || "default".equals(normalized)) {
+                return PER_BROWSER;
+            }
+            if (!"single".equals(normalized) && !"legacy".equals(normalized)) {
+                LOGGER.warn("Unknown {} value '{}'; using per-browser state", ENVIRONMENT_KEY, value);
+                return PER_BROWSER;
+            }
+            return SINGLE;
         }
     }
 }
