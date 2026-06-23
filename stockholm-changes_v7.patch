@@ -1,0 +1,51 @@
+diff --git a/stockholm/js/app_comm.js b/stockholm/js/app_comm.js
+--- a/stockholm/js/app_comm.js
++++ b/stockholm/js/app_comm.js
+@@ -61,12 +61,7 @@ function AppComm() {
+             return;
+         }
+ 
+-        var clientIdKey = "stockholmBridgeClientId";
+-        var clientId = window.localStorage.getItem(clientIdKey);
+-        if (!clientId) {
+-            clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+-            window.localStorage.setItem(clientIdKey, clientId);
+-        }
++        var clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+ 
+         function resolveWebviewUrl(url) {
+             return new URL(url, window.location.origin + "/").href;
+diff --git a/stockholm/js/browser_native_bridge.js b/stockholm/js/browser_native_bridge.js
+--- a/stockholm/js/browser_native_bridge.js
++++ b/stockholm/js/browser_native_bridge.js
+@@ -6,12 +6,7 @@
+         return;
+     }
+ 
+-    var clientIdKey = "stockholmBridgeClientId";
+-    var clientId = window.localStorage.getItem(clientIdKey);
+-    if (!clientId) {
+-        clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+-        window.localStorage.setItem(clientIdKey, clientId);
+-    }
++    var clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+ 
+     function resolveWebviewUrl(url) {
+         return new URL(url, window.location.origin + "/").href;
+diff --git a/stockholm/setup/js/app_comm.js b/stockholm/setup/js/app_comm.js
+--- a/stockholm/setup/js/app_comm.js
++++ b/stockholm/setup/js/app_comm.js
+@@ -61,12 +61,7 @@ function AppComm() {
+             return;
+         }
+ 
+-        var clientIdKey = "stockholmBridgeClientId";
+-        var clientId = window.localStorage.getItem(clientIdKey);
+-        if (!clientId) {
+-            clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+-            window.localStorage.setItem(clientIdKey, clientId);
+-        }
++        var clientId = "stockholm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+ 
+         function resolveWebviewUrl(url) {
+             return new URL(url, window.location.origin + "/").href;
