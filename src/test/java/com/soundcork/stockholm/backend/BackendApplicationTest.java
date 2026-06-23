@@ -52,10 +52,12 @@ final class BackendApplicationTest {
     }
 
     @Test
-    void clientStateModeDefaultsToSingle() {
-        assertEquals(BackendApplication.ClientStateMode.SINGLE, BackendApplication.ClientStateMode.fromEnvironment(Map.of()));
+    void clientStateModeDefaultsToPerBrowser() {
+        assertEquals(BackendApplication.ClientStateMode.PER_BROWSER, BackendApplication.ClientStateMode.fromEnvironment(Map.of()));
         assertEquals(BackendApplication.ClientStateMode.PER_BROWSER,
                 BackendApplication.ClientStateMode.fromEnvironment(Map.of("STOCKHOLM_CLIENT_STATE_MODE", "per-browser")));
+        assertEquals(BackendApplication.ClientStateMode.SINGLE,
+                BackendApplication.ClientStateMode.fromEnvironment(Map.of("STOCKHOLM_CLIENT_STATE_MODE", "single")));
     }
 
     private static final class TestHttpExchange extends HttpExchange {

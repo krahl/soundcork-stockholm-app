@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class NativeBridgeServiceTest {
     @TempDir
@@ -124,5 +126,21 @@ final class NativeBridgeServiceTest {
             assertEquals("default-account", bridgeService.getStateValue("margeAccountID"));
             assertEquals("account-a", bridgeService.getStateValue("client-a", "margeAccountID"));
         }
+    }
+
+    @Test
+    void defaultStateMigratesToOnlyOneNewClient() throws IOException {
+        Path stateFile = tempDir.resolve("native-state.json");
+        Files.writeString(stateFile, """
+                {"margeAuthToken":"legacy-token","margeAccountID":"1234567"}
+                """, StandardCharsets.UTF_8);
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+            assertEquals("legacy-token", bridgeService.getStateValue("client-a", "margeAuthToken"));
+            assertEquals("1234567", bridgeService.getStateValue("client-a", "margeAccountID"));
+            assertNull(bridgeService.getStateValue("client-b", "margeAuthToken"));
+        }
+
+        assertTrue(Files.exists(tempDir.resolve("clients").resolve(".default-state-migrated")));
     }
 }

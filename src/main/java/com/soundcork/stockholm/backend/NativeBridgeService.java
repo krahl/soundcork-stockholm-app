@@ -25,6 +25,7 @@ final class NativeBridgeService implements AutoCloseable {
     private static final String UNSUPPORTED = "unsupported";
     private static final String MARGE_AUTH_TOKEN_KEY = "margeAuthToken";
     private static final String MARGE_ACCOUNT_ID_KEY = "margeAccountID";
+    private static final String CLIENT_STATE_MIGRATION_FLAG_FILE = ".default-state-migrated";
     private static final Map<String, String> DEFAULT_CONSTANTS = Map.of(
             "kilo", "a7928d7b43dcd49f0af31e5aeed26458"
     );
@@ -32,10 +33,12 @@ final class NativeBridgeService implements AutoCloseable {
 
     private final Path defaultStateFile;
     private final Path clientStateDirectory;
+    private final Path clientStateMigrationFlagFile;
     private final SsdpDiscoveryService discoveryService;
     private final ConcurrentMap<String, ConcurrentMap<String, String>> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ArrayDeque<Map<String, Object>>> queues = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final Object clientStateMigrationLock = new Object();
 
     NativeBridgeService(Path statePath) {
         this(statePath, System.getenv());
@@ -44,6 +47,7 @@ final class NativeBridgeService implements AutoCloseable {
     NativeBridgeService(Path statePath, Map<String, String> environment) {
         this.defaultStateFile = defaultStateFile(statePath);
         this.clientStateDirectory = defaultStateFile.getParent().resolve("clients");
+        this.clientStateMigrationFlagFile = clientStateDirectory.resolve(CLIENT_STATE_MIGRATION_FLAG_FILE);
         this.discoveryService = new SsdpDiscoveryService();
         states.put(DEFAULT_CLIENT_ID, loadState(DEFAULT_CLIENT_ID));
         seedDefaultConstants(DEFAULT_CLIENT_ID);
@@ -318,6 +322,11 @@ final class NativeBridgeService implements AutoCloseable {
             Path rawStateFile = rawClientStateFile(clientId);
             if (Files.exists(rawStateFile)) {
                 stateFile = rawStateFile;
+            } else {
+                ConcurrentMap<String, String> migrated = migrateDefaultStateToClientIfNeeded(clientId, stateFile);
+                if (migrated != null) {
+                    return migrated;
+                }
             }
         }
         if (!Files.exists(stateFile)) {
@@ -335,6 +344,32 @@ final class NativeBridgeService implements AutoCloseable {
             LOGGER.warn("Failed to load persisted native bridge state from {}", stateFile, exception);
         }
         return state;
+    }
+
+    private ConcurrentMap<String, String> migrateDefaultStateToClientIfNeeded(String clientId, Path targetStateFile) {
+        synchronized (clientStateMigrationLock) {
+            if (Files.exists(clientStateMigrationFlagFile) || Files.exists(targetStateFile)) {
+                return null;
+            }
+            ConcurrentMap<String, String> defaultState = states.get(DEFAULT_CLIENT_ID);
+            if (defaultState == null) {
+                defaultState = loadState(DEFAULT_CLIENT_ID);
+            }
+            ConcurrentMap<String, String> migrated = new ConcurrentHashMap<>(defaultState);
+            try {
+                Files.createDirectories(targetStateFile.getParent());
+                Files.writeString(targetStateFile, SimpleJson.stringify(new LinkedHashMap<>(migrated)), StandardCharsets.UTF_8);
+                Files.writeString(clientStateMigrationFlagFile,
+                        "Migrated legacy native-state.json to per-browser client " + normalizeClientId(clientId) + "\n",
+                        StandardCharsets.UTF_8);
+                LOGGER.info("Migrated legacy default state from {} to {} for client '{}'",
+                        defaultStateFile, targetStateFile, normalizeClientId(clientId));
+            } catch (IOException exception) {
+                LOGGER.warn("Failed to migrate legacy default state from {} to {}",
+                        defaultStateFile, targetStateFile, exception);
+            }
+            return migrated;
+        }
     }
 
     private void persistState(String clientId) {

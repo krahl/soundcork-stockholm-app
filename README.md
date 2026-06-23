@@ -19,7 +19,7 @@ This project is under active development. Expect bugs and limitations.
 - Serves the `stockholm` frontend on `http://127.0.0.1:8088/`
 - Implements a queue-backed `Native.appSend(...)` / `Native.runQueue()` bridge
 - Proxies browser cross-origin HTTP(S) requests through `/api/http-proxy`
-- Persists `getData` / `setData` values under `state/native-state.json` by default, with optional browser-specific state under `state/clients/`
+- Persists `getData` / `setData` values per browser under `state/clients/` by default, with legacy shared state in `state/native-state.json`
 - Seeds `margeAuthToken` and `margeAccountID` from environment variables when provided
 - Rebuilds `stockholm/json/config.json` from `stockholm/json/backup.json` on container start so URL env changes take effect after restart
 - Reads backend configuration from `config/backend-config.json`
@@ -107,21 +107,23 @@ The startup script always regenerates `stockholm/json/config.json` from `stockho
 
 `STOCKHOLM_CLIENT_STATE_MODE` controls whether all browsers share one Stockholm native state file or each browser gets its own state.
 
-The Docker Compose default is intentionally conservative:
-
-```env
-STOCKHOLM_CLIENT_STATE_MODE=single
-```
-
-`single` uses only `state/native-state.json`, matching older versions of this app. This is the default when the variable is unset so existing Docker users stay logged in after upgrading.
-
-For new installs, `per-browser` is recommended:
+The default is `per-browser`:
 
 ```env
 STOCKHOLM_CLIENT_STATE_MODE=per-browser
 ```
 
-`per-browser` gives each browser or device a `stockholmClientId` cookie and stores that browser's state under `state/clients/`. This lets one browser be logged into one account while another browser or device uses a different account. A browser without that cookie starts with a new empty client state, so enable this deliberately on existing installs.
+`per-browser` gives each browser or device a `stockholmClientId` cookie and stores that browser's state under `state/clients/`. This lets one browser be logged into one account while another browser or device uses a different account.
+
+When upgrading from older shared-state versions, the first browser without existing per-browser state receives a one-time copy of `state/native-state.json`. The backend then writes `state/clients/.default-state-migrated` so later new browsers start with their own empty state instead of repeatedly inheriting the legacy login.
+
+To keep the old shared-session behavior, set:
+
+```env
+STOCKHOLM_CLIENT_STATE_MODE=single
+```
+
+`single` uses only `state/native-state.json`, matching older versions of this app.
 
 Optional Marge session values:
 

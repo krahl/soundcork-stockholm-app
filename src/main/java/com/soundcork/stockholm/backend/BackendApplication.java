@@ -626,21 +626,23 @@ public final class BackendApplication {
 
         static ClientStateMode fromEnvironment(java.util.Map<String, String> environment) {
             if (environment == null) {
-                return SINGLE;
+                return PER_BROWSER;
             }
             return fromValue(environment.get(ENVIRONMENT_KEY));
         }
 
         static ClientStateMode fromValue(String value) {
             if (value == null || value.isBlank()) {
-                return SINGLE;
-            }
-            String normalized = value.trim().toLowerCase(Locale.ROOT);
-            if ("per-browser".equals(normalized) || "per_browser".equals(normalized) || "multi".equals(normalized)) {
                 return PER_BROWSER;
             }
-            if (!"single".equals(normalized) && !"default".equals(normalized) && !"legacy".equals(normalized)) {
-                LOGGER.warn("Unknown {} value '{}'; using single-client state", ENVIRONMENT_KEY, value);
+            String normalized = value.trim().toLowerCase(Locale.ROOT);
+            if ("per-browser".equals(normalized) || "per_browser".equals(normalized)
+                    || "multi".equals(normalized) || "default".equals(normalized)) {
+                return PER_BROWSER;
+            }
+            if (!"single".equals(normalized) && !"legacy".equals(normalized)) {
+                LOGGER.warn("Unknown {} value '{}'; using per-browser state", ENVIRONMENT_KEY, value);
+                return PER_BROWSER;
             }
             return SINGLE;
         }
