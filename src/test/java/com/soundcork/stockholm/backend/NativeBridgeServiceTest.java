@@ -129,7 +129,7 @@ final class NativeBridgeServiceTest {
     }
 
     @Test
-    void defaultStateMigratesToOnlyOneNewClient() throws IOException {
+    void defaultStateMigratesToMultipleNewClientsDuringGracePeriod() throws IOException {
         Path stateFile = tempDir.resolve("native-state.json");
         Files.writeString(stateFile, """
                 {"margeAuthToken":"legacy-token","margeAccountID":"1234567"}
@@ -138,9 +138,56 @@ final class NativeBridgeServiceTest {
         try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
             assertEquals("legacy-token", bridgeService.getStateValue("client-a", "margeAuthToken"));
             assertEquals("1234567", bridgeService.getStateValue("client-a", "margeAccountID"));
-            assertNull(bridgeService.getStateValue("client-b", "margeAuthToken"));
+            assertEquals("legacy-token", bridgeService.getStateValue("client-b", "margeAuthToken"));
+            assertEquals("1234567", bridgeService.getStateValue("client-b", "margeAccountID"));
         }
 
         assertTrue(Files.exists(tempDir.resolve("clients").resolve(".default-state-migrated")));
+        assertTrue(Files.exists(tempDir.resolve("clients").resolve(".default-state-migration-window.json")));
+    }
+
+    @Test
+    void defaultStateDoesNotMigrateAfterGracePeriodExpires() throws IOException {
+        Path stateFile = tempDir.resolve("native-state.json");
+        Path clientsDirectory = tempDir.resolve("clients");
+        Files.createDirectories(clientsDirectory);
+        Files.writeString(stateFile, """
+                {"margeAuthToken":"legacy-token","margeAccountID":"1234567"}
+                """, StandardCharsets.UTF_8);
+        Files.writeString(clientsDirectory.resolve(".default-state-migration-window.json"), """
+                {"startedAt":"2024-01-01T00:00:00Z","expiresAt":"2024-01-02T00:00:00Z"}
+                """, StandardCharsets.UTF_8);
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of())) {
+            assertNull(bridgeService.getStateValue("client-a", "margeAuthToken"));
+        }
+    }
+
+    @Test
+    void defaultStateMigrationCanBeDisabledByEnvironment() throws IOException {
+        Path stateFile = tempDir.resolve("native-state.json");
+        Files.writeString(stateFile, """
+                {"margeAuthToken":"legacy-token","margeAccountID":"1234567"}
+                """, StandardCharsets.UTF_8);
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
+                "STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED", "false"))) {
+            assertNull(bridgeService.getStateValue("client-a", "margeAuthToken"));
+        }
+
+        assertTrue(!Files.exists(tempDir.resolve("clients").resolve(".default-state-migration-window.json")));
+    }
+
+    @Test
+    void defaultStateMigrationRequiresExistingLoginInNativeState() {
+        Path stateFile = tempDir.resolve("native-state.json");
+
+        try (NativeBridgeService bridgeService = new NativeBridgeService(stateFile, Map.of(
+                "MARGE_AUTH_TOKEN", "token-from-env",
+                "MARGE_ACCOUNT_ID", "1234567"))) {
+            assertNull(bridgeService.getStateValue("client-a", "margeAuthToken"));
+        }
+
+        assertTrue(!Files.exists(tempDir.resolve("clients").resolve(".default-state-migration-window.json")));
     }
 }

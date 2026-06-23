@@ -19,6 +19,8 @@ services:
       BACKEND_PORT: ${BACKEND_PORT:-8088}
       BACKEND_URL: ${BACKEND_URL:-http://soundcork:8000}
       STOCKHOLM_CLIENT_STATE_MODE: ${STOCKHOLM_CLIENT_STATE_MODE:-per-browser}
+      STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED: ${STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED:-true}
+      STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS: ${STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS:-24}
       # Optional: defaults to BACKEND_URL/marge inside the container when unset.
       STREAMING_URL: ${STREAMING_URL:-}
       # The trailing / is important and use marge/ suffix when used against soundcork!

@@ -88,6 +88,8 @@ BACKEND_BIND_IP=0.0.0.0
 BACKEND_PORT=8088
 BACKEND_URL=http://soundcork:8000
 STOCKHOLM_CLIENT_STATE_MODE=per-browser
+STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED=true
+STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS=24
 # Optional; defaults to BACKEND_URL/marge when omitted.
 STREAMING_URL=http://soundcork:8000/marge
 AUTH_SERVICE_URL=http://soundcork:8000/marge/
@@ -115,7 +117,19 @@ STOCKHOLM_CLIENT_STATE_MODE=per-browser
 
 `per-browser` gives each browser or device a `stockholmClientId` cookie and stores that browser's state under `state/clients/`. This lets one browser be logged into one account while another browser or device uses a different account.
 
-When upgrading from older shared-state versions, the first browser without existing per-browser state receives a one-time copy of `state/native-state.json`. The backend then writes `state/clients/.default-state-migrated` so later new browsers start with their own empty state instead of repeatedly inheriting the legacy login.
+When upgrading from older shared-state versions, browsers without existing per-browser state can copy the legacy `state/native-state.json` login during a grace period. The default grace period is 24 hours and is recorded in `state/clients/.default-state-migration-window.json`. This migration window is opened only when `state/native-state.json` already exists with both `margeAuthToken` and `margeAccountID`, so fresh installs do not inherit empty or environment-only state forever.
+
+To disable this upgrade migration entirely, set:
+
+```env
+STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED=false
+```
+
+To change the grace period, set:
+
+```env
+STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS=24
+```
 
 To keep the old shared-session behavior, set:
 

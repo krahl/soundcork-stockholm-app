@@ -6,6 +6,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.HexFormat;
@@ -26,6 +28,10 @@ final class NativeBridgeService implements AutoCloseable {
     private static final String MARGE_AUTH_TOKEN_KEY = "margeAuthToken";
     private static final String MARGE_ACCOUNT_ID_KEY = "margeAccountID";
     private static final String CLIENT_STATE_MIGRATION_FLAG_FILE = ".default-state-migrated";
+    private static final String CLIENT_STATE_MIGRATION_WINDOW_FILE = ".default-state-migration-window.json";
+    private static final String LEGACY_STATE_MIGRATION_ENABLED_KEY = "STOCKHOLM_LEGACY_STATE_MIGRATION_ENABLED";
+    private static final String LEGACY_STATE_MIGRATION_GRACE_HOURS_KEY = "STOCKHOLM_LEGACY_STATE_MIGRATION_GRACE_HOURS";
+    private static final Duration DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD = Duration.ofHours(24);
     private static final Map<String, String> DEFAULT_CONSTANTS = Map.of(
             "kilo", "a7928d7b43dcd49f0af31e5aeed26458"
     );
@@ -34,11 +40,15 @@ final class NativeBridgeService implements AutoCloseable {
     private final Path defaultStateFile;
     private final Path clientStateDirectory;
     private final Path clientStateMigrationFlagFile;
+    private final Path clientStateMigrationWindowFile;
     private final SsdpDiscoveryService discoveryService;
     private final ConcurrentMap<String, ConcurrentMap<String, String>> states = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ArrayDeque<Map<String, Object>>> queues = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Object clientStateMigrationLock = new Object();
+    private final boolean legacyStateMigrationEnabled;
+    private final Duration legacyStateMigrationGracePeriod;
+    private final boolean legacyDefaultStateMigrationAvailable;
 
     NativeBridgeService(Path statePath) {
         this(statePath, System.getenv());
@@ -48,10 +58,16 @@ final class NativeBridgeService implements AutoCloseable {
         this.defaultStateFile = defaultStateFile(statePath);
         this.clientStateDirectory = defaultStateFile.getParent().resolve("clients");
         this.clientStateMigrationFlagFile = clientStateDirectory.resolve(CLIENT_STATE_MIGRATION_FLAG_FILE);
+        this.clientStateMigrationWindowFile = clientStateDirectory.resolve(CLIENT_STATE_MIGRATION_WINDOW_FILE);
+        this.legacyStateMigrationEnabled = legacyStateMigrationEnabled(environment);
+        this.legacyStateMigrationGracePeriod = legacyStateMigrationGracePeriod(environment);
         this.discoveryService = new SsdpDiscoveryService();
-        states.put(DEFAULT_CLIENT_ID, loadState(DEFAULT_CLIENT_ID));
+        ConcurrentMap<String, String> defaultState = loadState(DEFAULT_CLIENT_ID);
+        this.legacyDefaultStateMigrationAvailable = Files.exists(defaultStateFile) && hasMargeSession(defaultState);
+        states.put(DEFAULT_CLIENT_ID, defaultState);
         seedDefaultConstants(DEFAULT_CLIENT_ID);
         seedMargeSessionFromEnvironment(environment);
+        initializeLegacyStateMigrationWindow();
         LOGGER.debug("NativeBridgeService initialized with default state file {} and client state directory {}",
                 defaultStateFile, clientStateDirectory);
     }
@@ -348,20 +364,30 @@ final class NativeBridgeService implements AutoCloseable {
 
     private ConcurrentMap<String, String> migrateDefaultStateToClientIfNeeded(String clientId, Path targetStateFile) {
         synchronized (clientStateMigrationLock) {
-            if (Files.exists(clientStateMigrationFlagFile) || Files.exists(targetStateFile)) {
+            if (!legacyStateMigrationEnabled || !legacyDefaultStateMigrationAvailable || Files.exists(targetStateFile)) {
+                return null;
+            }
+            MigrationWindow migrationWindow = legacyStateMigrationWindow();
+            if (migrationWindow == null || Instant.now().isAfter(migrationWindow.expiresAt())) {
                 return null;
             }
             ConcurrentMap<String, String> defaultState = states.get(DEFAULT_CLIENT_ID);
             if (defaultState == null) {
                 defaultState = loadState(DEFAULT_CLIENT_ID);
             }
+            if (!hasMargeSession(defaultState)) {
+                return null;
+            }
             ConcurrentMap<String, String> migrated = new ConcurrentHashMap<>(defaultState);
             try {
                 Files.createDirectories(targetStateFile.getParent());
                 Files.writeString(targetStateFile, SimpleJson.stringify(new LinkedHashMap<>(migrated)), StandardCharsets.UTF_8);
-                Files.writeString(clientStateMigrationFlagFile,
-                        "Migrated legacy native-state.json to per-browser client " + normalizeClientId(clientId) + "\n",
-                        StandardCharsets.UTF_8);
+                if (!Files.exists(clientStateMigrationFlagFile)) {
+                    Files.writeString(clientStateMigrationFlagFile,
+                            "Migrated legacy native-state.json to one or more per-browser clients between "
+                                    + migrationWindow.startedAt() + " and " + migrationWindow.expiresAt() + "\n",
+                            StandardCharsets.UTF_8);
+                }
                 LOGGER.info("Migrated legacy default state from {} to {} for client '{}'",
                         defaultStateFile, targetStateFile, normalizeClientId(clientId));
             } catch (IOException exception) {
@@ -369,6 +395,64 @@ final class NativeBridgeService implements AutoCloseable {
                         defaultStateFile, targetStateFile, exception);
             }
             return migrated;
+        }
+    }
+
+    private void initializeLegacyStateMigrationWindow() {
+        if (!legacyStateMigrationEnabled || !legacyDefaultStateMigrationAvailable) {
+            return;
+        }
+        synchronized (clientStateMigrationLock) {
+            if (legacyStateMigrationWindow() != null) {
+                return;
+            }
+            Instant startedAt = legacyMigrationStartedAt();
+            writeLegacyStateMigrationWindow(startedAt);
+        }
+    }
+
+    private MigrationWindow legacyStateMigrationWindow() {
+        if (!Files.exists(clientStateMigrationWindowFile)) {
+            return null;
+        }
+        try {
+            Map<String, Object> object = SimpleJson.asObject(
+                    SimpleJson.parse(Files.readString(clientStateMigrationWindowFile, StandardCharsets.UTF_8)));
+            Instant startedAt = Instant.parse(stringValue(object.get("startedAt")));
+            Instant expiresAt = Instant.parse(stringValue(object.get("expiresAt")));
+            return new MigrationWindow(startedAt, expiresAt);
+        } catch (IOException | RuntimeException exception) {
+            LOGGER.warn("Failed to read legacy state migration window from {}", clientStateMigrationWindowFile, exception);
+            return null;
+        }
+    }
+
+    private Instant legacyMigrationStartedAt() {
+        if (Files.exists(clientStateMigrationFlagFile)) {
+            try {
+                return Files.getLastModifiedTime(clientStateMigrationFlagFile).toInstant();
+            } catch (IOException exception) {
+                LOGGER.warn("Failed to read legacy state migration marker time from {}", clientStateMigrationFlagFile, exception);
+            }
+        }
+        return Instant.now();
+    }
+
+    private void writeLegacyStateMigrationWindow(Instant startedAt) {
+        Instant expiresAt = startedAt.plus(legacyStateMigrationGracePeriod);
+        LinkedHashMap<String, Object> window = new LinkedHashMap<>();
+        window.put("version", 1);
+        window.put("startedAt", startedAt.toString());
+        window.put("expiresAt", expiresAt.toString());
+        window.put("graceHours", legacyStateMigrationGracePeriod.toHours());
+        window.put("source", "native-state.json");
+        window.put("note", "During this grace period, new per-browser clients may copy the legacy shared native-state.json login. After expiresAt, new clients start empty.");
+        try {
+            Files.createDirectories(clientStateMigrationWindowFile.getParent());
+            Files.writeString(clientStateMigrationWindowFile, SimpleJson.stringify(window), StandardCharsets.UTF_8);
+            LOGGER.info("Legacy shared state migration window is open until {}", expiresAt);
+        } catch (IOException exception) {
+            LOGGER.warn("Failed to write legacy state migration window to {}", clientStateMigrationWindowFile, exception);
         }
     }
 
@@ -475,6 +559,52 @@ final class NativeBridgeService implements AutoCloseable {
         return null;
     }
 
+    private boolean legacyStateMigrationEnabled(Map<String, String> environment) {
+        if (environment == null) {
+            return true;
+        }
+        String value = environment.get(LEGACY_STATE_MIGRATION_ENABLED_KEY);
+        if (value == null || value.isBlank()) {
+            return true;
+        }
+        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        return !"false".equals(normalized) && !"0".equals(normalized) && !"no".equals(normalized)
+                && !"off".equals(normalized) && !"disabled".equals(normalized);
+    }
+
+    private Duration legacyStateMigrationGracePeriod(Map<String, String> environment) {
+        if (environment == null) {
+            return DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD;
+        }
+        String value = environment.get(LEGACY_STATE_MIGRATION_GRACE_HOURS_KEY);
+        if (value == null || value.isBlank()) {
+            return DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD;
+        }
+        try {
+            long hours = Long.parseLong(value.trim());
+            if (hours < 0) {
+                LOGGER.warn("Ignoring negative {} value '{}'; using {} hours",
+                        LEGACY_STATE_MIGRATION_GRACE_HOURS_KEY, value,
+                        DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD.toHours());
+                return DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD;
+            }
+            return Duration.ofHours(hours);
+        } catch (NumberFormatException exception) {
+            LOGGER.warn("Invalid {} value '{}'; using {} hours",
+                    LEGACY_STATE_MIGRATION_GRACE_HOURS_KEY, value,
+                    DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD.toHours());
+            return DEFAULT_LEGACY_STATE_MIGRATION_GRACE_PERIOD;
+        }
+    }
+
+    private boolean hasMargeSession(Map<String, String> state) {
+        if (state == null || state.isEmpty()) {
+            return false;
+        }
+        return blankToNull(state.get(MARGE_AUTH_TOKEN_KEY)) != null
+                && blankToNull(state.get(MARGE_ACCOUNT_ID_KEY)) != null;
+    }
+
     private String blankToNull(String value) {
         if (value == null) {
             return null;
@@ -487,5 +617,8 @@ final class NativeBridgeService implements AutoCloseable {
     public void close() {
         LOGGER.debug("Shutting down NativeBridgeService executor");
         executor.shutdownNow();
+    }
+
+    private record MigrationWindow(Instant startedAt, Instant expiresAt) {
     }
 }
