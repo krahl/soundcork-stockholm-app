@@ -47,7 +47,7 @@ final class HttpProxyServiceTest {
     @Test
     void defaultHttpClientUsesHttp11ToAvoidH2cUpgradeRequests() throws Exception {
         TestContext context = createContext();
-        HttpProxyService service = new HttpProxyService(context.dataService());
+        HttpProxyService service = new HttpProxyService(context.dataService(), context.bridgeService());
 
         java.lang.reflect.Field httpClientField = HttpProxyService.class.getDeclaredField("httpClient");
         httpClientField.setAccessible(true);
@@ -70,7 +70,7 @@ final class HttpProxyServiceTest {
                         Map.of("Credentials", List.of("Bearer new-token"))));
 
         TestContext context = createContext();
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.post(
                 proxyUri("https://streaming.bose.com/streaming/account/login"),
@@ -104,7 +104,7 @@ final class HttpProxyServiceTest {
         context.bridgeService().putStateValues(Map.of(
                 "margeAccountID", "existing-id",
                 "margeAuthToken", "Bearer existing"));
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.post(
                 proxyUri("https://streaming.bose.com/streaming/account/login"),
@@ -140,7 +140,7 @@ final class HttpProxyServiceTest {
                 "guid", "stored-guid",
                 "nativeFrameVersion", "27.0.8",
                 "margeAuthToken", "Bearer stored-token"));
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.post(
                 proxyUri("https://bose-test.apigee.net/margeproxyefe/streaming/account/login"),
@@ -203,7 +203,7 @@ final class HttpProxyServiceTest {
                         Map.of("Credentials", List.of("Bearer switched-token"))));
 
         TestContext context = createContext();
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.post(
                 proxyUri("https://streaming.bose.com/streaming/account/login"),
@@ -266,7 +266,7 @@ final class HttpProxyServiceTest {
 
         TestContext context = createContext();
         context.bridgeService().putStateValue("authServer", "2");
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.post(
                 proxyUri("https://bose-test.apigee.net/margeproxyefe/streaming/account/login"),
@@ -304,7 +304,7 @@ final class HttpProxyServiceTest {
                 "margeAuthToken", "Bearer stored-token",
                 "guid", "stored-guid",
                 "nativeFrameVersion", "27.0.8"));
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.get(
                 proxyUri("https://streaming.bose.com/streaming/account/42/sources"),
@@ -336,7 +336,7 @@ final class HttpProxyServiceTest {
                 "margeAuthToken", "Bearer stored-token",
                 "guid", "stored-guid",
                 "nativeFrameVersion", "27.0.8"));
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         Headers headers = new Headers();
         headers.add("Authorization", "null");
@@ -361,7 +361,7 @@ final class HttpProxyServiceTest {
         httpClient.enqueueResponse(request -> true, TestHttpResponse.xml(200, "<ok/>", Map.of()));
 
         TestContext context = createContext();
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.get(
                 proxyUri("https://content.api.bose.io/bmx/registry/v1/services"),
@@ -399,7 +399,7 @@ final class HttpProxyServiceTest {
                 "authServer", "2",
                 "guid", "stored-guid",
                 "nativeFrameVersion", "27.0.8"));
-        HttpProxyService service = new HttpProxyService(httpClient, context.dataService());
+        HttpProxyService service = new HttpProxyService(httpClient, context.dataService(), context.bridgeService());
 
         TestHttpExchange exchange = TestHttpExchange.get(
                 proxyUri("https://bose-test.apigee.net/margeproxyefe/streaming/account/42/sources"),
